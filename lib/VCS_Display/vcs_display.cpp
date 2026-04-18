@@ -12,6 +12,12 @@ void initDisplay() {
     if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         // Log I2C failure if necessary
     }
+
+    // REQUIRED for 20 Hz task budget: full-frame display.display() at default
+    // 100 kHz I2C = ~92 ms and blows the 50 ms slot on its own. 400 kHz brings
+    // it to ~23 ms. Must be called AFTER display.begin() (which calls Wire.begin()).
+    Wire.setClock(400000);
+
     display.clearDisplay();
     // Use the explicit SSD1306_WHITE to prevent macro collisions on ARM
     display.setTextColor(SSD1306_WHITE); 

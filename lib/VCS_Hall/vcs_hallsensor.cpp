@@ -6,6 +6,11 @@ volatile uint32_t hall_pulse_count = 0;
 uint32_t last_calc_time = 0;
 float current_rpm = 0.0f;
 
+// Set to true each time a new RPM value is computed; cleared by
+// consumeNewRPMSample(). Lets the 1 kHz throttle PID skip Compute() on
+// ticks where the 10 Hz Hall measurement hasn't updated.
+static bool s_new_rpm_sample = false;
+
 // The ISR: Runs every time the Controller's Yellow Wire pulses HIGH
 // REMOVED IRAM_ATTR: Not required/supported on Nano 33 BLE (Mbed OS)
 void handleHallInterrupt() {
@@ -53,7 +58,19 @@ void updateHallCalculations() {
         }
 
         last_calc_time = now;
+        s_new_rpm_sample = true; // Signal downstream consumers (throttle PID)
     }
+}
+
+bool consumeNewRPMSample() {
+    // Test-and-clear. Safe to call from the ControlTask thread since
+    // updateHallCalculations() and consumeNewRPMSample() both run there
+    // (not from the ISR).
+    if (s_new_rpm_sample) {
+        s_new_rpm_sample = false;
+        return true;
+    }
+    return false;
 }
 
 float getMeasuredRPM() {

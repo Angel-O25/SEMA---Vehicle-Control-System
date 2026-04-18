@@ -58,6 +58,18 @@ void updateUART() {
                 break;
                 
             case WAIT_LEN:
+                // Bounds check BEFORE we commit to parsing this packet.
+                // rxBuffer is 64 bytes and we need room for:
+                //   [0]=type  [1]=len  [2..len+1]=payload  [len+2]=CRC hi
+                //   [len+3]=CRC lo
+                // so the maximum safe payload length is 60. A bit-flipped or
+                // hostile LEN=0xFF would otherwise walk past the buffer and
+                // the WAIT_PAYLOAD exit condition (rxIndex is uint8_t) would
+                // never trigger.
+                if (byte > 60) {
+                    rxState = WAIT_START1;
+                    break;
+                }
                 rxBuffer[1] = byte;
                 expectedLength = byte;
                 rxState = WAIT_SEQ;

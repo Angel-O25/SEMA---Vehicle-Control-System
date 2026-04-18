@@ -10,6 +10,10 @@
 DriveMode current_drive_mode = DRIVE_MED; 
 static float speed_limit_multiplier = 0.60f; // Default to 60% on boot
 
+// Debounce: at 100 Hz, 3 ticks = 30 ms of stable reading before we
+// commit a mode change. Prevents PWM surges on SP3T contact bounce.
+static const uint8_t SPEED_DEBOUNCE_TICKS = 3;
+
 void initThreeSpeed() {
     // Enable internal pull-ups so grounding the pins gives a clean LOW
     pinMode(PIN_SPEED_SW_LOW, INPUT_PULLUP);
@@ -26,12 +30,35 @@ void updateThreeSpeed() {
     bool swLow = (digitalRead(PIN_SPEED_SW_LOW) == LOW);
     bool swHigh = (digitalRead(PIN_SPEED_SW_HIGH) == LOW);
 
-    if (swLow) { 
-        setDriveMode(DRIVE_LOW);
+    // Decide the raw requested mode this tick. Center position
+    // (neither pin grounded) defaults to MED.
+    DriveMode rawMode;
+    if (swLow) {
+        rawMode = DRIVE_LOW;
     } else if (swHigh) {
-        setDriveMode(DRIVE_HIGH);
+        rawMode = DRIVE_HIGH;
     } else {
-        setDriveMode(DRIVE_MED); // Center position / No pins grounded
+        rawMode = DRIVE_MED;
+    }
+
+    // Debounce: only commit the change once the same mode has been
+    // seen for SPEED_DEBOUNCE_TICKS consecutive ticks.
+    static DriveMode pendingMode = DRIVE_MED;
+    static uint8_t   pendingCount = 0;
+
+    if (rawMode == current_drive_mode) {
+        // Already there — discard any in-progress pending change.
+        pendingCount = 0;
+    } else if (rawMode == pendingMode) {
+        if (pendingCount < SPEED_DEBOUNCE_TICKS) pendingCount++;
+        if (pendingCount >= SPEED_DEBOUNCE_TICKS) {
+            setDriveMode(pendingMode);
+            pendingCount = 0;
+        }
+    } else {
+        // New candidate — restart the counter.
+        pendingMode = rawMode;
+        pendingCount = 1;
     }
 }
 

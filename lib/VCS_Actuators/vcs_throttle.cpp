@@ -3,14 +3,15 @@
 #include "vcs_state_machine.h"
 #include "vcs_constants.h"
 #include "vcs_pins.h"
+#include "vcs_hallsensor.h" // For consumeNewRPMSample()
 
 // Global Telemetry Variables
 uint16_t current_throttle_adc = 0;
 uint16_t current_pwm_duty = 0;
 
 // EMA Smoothing for Throttle Input
-float smoothedThrottle = 0.0;
-const float emaAlphaThrottle = 0.15; // 0.15 is the smoothing weight
+float smoothedThrottle = 0.0f;
+const float emaAlphaThrottle = 0.15f; // 0.15 is the smoothing weight (f-suffix forces float math, not double)
 
 // PID Variables
 float measured_rpm = 0.0f;
@@ -24,8 +25,13 @@ void initThrottle() {
     pinMode(PIN_THROTTLE_OUT, OUTPUT);
     pinMode(PIN_THROTTLE_IN, INPUT);
 
-    // Sync Nano 33 BLE hardware to the 10-bit standard (0-1023)
-    #ifdef NANO_33_BLE
+    // Sync Nano 33 BLE hardware to the 10-bit standard (0-1023).
+    // The Arduino Nano 33 BLE core does NOT define "NANO_33_BLE" — the actual
+    // predefined macros are ARDUINO_ARDUINO_NANO33BLE and/or ARDUINO_ARCH_MBED_NANO.
+    // With the old ifdef, these two lines were silently skipped, leaving the
+    // board at default 10-bit read / 8-bit write — which disagreed with
+    // MAX_PWM_OUT assumptions elsewhere.
+    #if defined(ARDUINO_ARDUINO_NANO33BLE) || defined(ARDUINO_ARCH_MBED_NANO) || defined(NANO_33_BLE)
     analogReadResolution(10);
     analogWriteResolution(10);
     #endif
@@ -43,8 +49,11 @@ void initThrottle() {
 
 void updateThrottle(float current_rpm_in, float target_rpm_in) {
     // --- EMA FILTER INJECTION ---
+    // All literals are float ('f' suffix) to avoid double-precision promotion,
+    // which is software-emulated on the Cortex-M4F (~10x slower than float).
     int rawThrottle = analogRead(PIN_THROTTLE_IN);
-    smoothedThrottle = (emaAlphaThrottle * rawThrottle) + ((1.0 - emaAlphaThrottle) * smoothedThrottle);
+    smoothedThrottle = (emaAlphaThrottle * (float)rawThrottle)
+                     + ((1.0f - emaAlphaThrottle) * smoothedThrottle);
     current_throttle_adc = (uint16_t)smoothedThrottle;
 
     // --- NEW: FETCH HARDWARE SPEED LIMIT ---
@@ -73,13 +82,23 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
     // --- 2. AUTONOMOUS CONTROL (PID) ---
     if (currentState == AUTONOMOUS_STATE) {
         if (speedPID.GetMode() == (uint8_t)QuickPID::Control::manual) {
+            // BUMPLESS TRANSFER (MANUAL -> AUTO):
+            // Seed the PID output with the CURRENT PWM before flipping to
+            // automatic. Otherwise QuickPID initializes its internal bumpless
+            // state against whatever stale value throttle_pwm_out held
+            // (typically 0 after a brake event), producing a step-down.
+            throttle_pwm_out = (float)current_pwm_duty;
             speedPID.SetMode(QuickPID::Control::automatic);
         }
-        
+
         measured_rpm = current_rpm_in;
         target_rpm = target_rpm_in;
-        
-        if (speedPID.Compute()) {
+
+        // Gate Compute() on a fresh Hall sample. The control task ticks at
+        // 1 kHz but the Hall window is 100 ms, so 99 of every 100 ticks
+        // would otherwise run the integrator on identical (stale) error,
+        // accelerating windup and producing a sluggish Ki response.
+        if (consumeNewRPMSample() && speedPID.Compute()) {
             current_pwm_duty = (uint16_t)throttle_pwm_out;
             analogWrite(PIN_THROTTLE_OUT, current_pwm_duty);
         }

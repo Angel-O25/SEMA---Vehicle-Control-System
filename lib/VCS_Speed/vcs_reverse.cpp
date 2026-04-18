@@ -28,7 +28,32 @@ void updateReverse() {
 
     // --- 3. THE SECURITY GATES ---
     // Gate A: Is the car effectively stopped? (Crucial hardware protection)
-    bool isStopped = (currentRPM < 5);
+    //
+    // Hysteresis + debounce:
+    //   - Enter "stopped" below 3 RPM.
+    //   - Leave "stopped" above 8 RPM.
+    //   - Require the condition to hold for STOPPED_CONFIRM_TICKS (50 ms @ 100 Hz)
+    //     before committing, so RPM noise right at the threshold cannot flicker
+    //     the reverse pin.
+    static const int      STOPPED_ENTER_RPM    = 3;
+    static const int      STOPPED_EXIT_RPM     = 8;
+    static const uint8_t  STOPPED_CONFIRM_TICKS = 5;
+    static bool           isStopped     = true; // safe default
+    static uint8_t        stoppedCounter = 0;
+
+    bool rawStopped = isStopped
+                        ? (currentRPM <  STOPPED_EXIT_RPM)   // stay stopped until clearly moving
+                        : (currentRPM <  STOPPED_ENTER_RPM); // stay moving until clearly stopped
+
+    if (rawStopped != isStopped) {
+        if (stoppedCounter < STOPPED_CONFIRM_TICKS) stoppedCounter++;
+        if (stoppedCounter >= STOPPED_CONFIRM_TICKS) {
+            isStopped = rawStopped;
+            stoppedCounter = 0;
+        }
+    } else {
+        stoppedCounter = 0;
+    }
     
     // Gate B: Determine which mode holds authority
     bool isManual = (currentState == MANUAL_STATE || currentState == IDLE_STATE);

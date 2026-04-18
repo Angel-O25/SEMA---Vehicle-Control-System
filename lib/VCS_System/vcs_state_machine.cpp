@@ -9,19 +9,53 @@
 VcsState currentState = INIT_STATE;
 uint32_t dmsStartTime = 0;
 
+// ESTOP latch: once set, only a power-cycle (which reinitializes this to false
+// via initState_Machine) can clear it. Set either by an ESTOP-class bit in the
+// fault word or by requestSoftwareEstop().
+static bool estopLatched = false;
+
 void initState_Machine() {
     currentState = INIT_STATE;
     dmsStartTime = 0;
+    estopLatched = false;
+}
+
+void requestSoftwareEstop() {
+    // Latch immediately so the next updateStateMachine() sees it and
+    // drives the brake. We also pull the brake here so the reaction
+    // doesn't have to wait for the next tick.
+    estopLatched = true;
+    currentState = ESTOP_STATE;
+    forceBrakeEngagement(true);
 }
 
 void updateStateMachine(uint32_t faults) {
     static VcsState lastState = INIT_STATE;
 
     // --- 1. PRIORITY SAFETY OVERRIDES ---
-    
-    // External faults (Over-current/Voltage) or Heartbeat Loss
-    if (faults > 0 || (!ansHeartbeatReceived() && currentState == AUTONOMOUS_STATE)) {
-        currentState = FAULT_STATE;
+
+    // ESTOP-class bits in the fault word latch forever (until power-cycle).
+    // requestSoftwareEstop() sets the latch directly and bypasses this path.
+    if (faults & VCS_FAULT_ESTOP_MASK) {
+        estopLatched = true;
+    }
+
+    if (estopLatched) {
+        // Highest priority: once latched, nothing else in this function
+        // is allowed to transition us out of ESTOP_STATE.
+        currentState = ESTOP_STATE;
+    } else {
+        // Recoverable faults (low 16 bits) and heartbeat loss during AUTONOMOUS.
+        //
+        // Note: heartbeat loss during MANUAL is intentionally NOT a fault here.
+        // The human driver is in control and losing the ANS link should not
+        // yank the car out from under them. VCS_FAULT_HEARTBEAT_LOST as defined
+        // in the header is only surfaced as a state transition while autonomous.
+        uint32_t recoverable = faults & ~VCS_FAULT_ESTOP_MASK;
+        if (recoverable > 0 ||
+            (!ansHeartbeatReceived() && currentState == AUTONOMOUS_STATE)) {
+            currentState = FAULT_STATE;
+        }
     }
 
     // --- 2. STATE TRANSITION LOGIC ---
@@ -41,7 +75,12 @@ void updateStateMachine(uint32_t faults) {
             // the ANS requesting Auto Mode (1), AND the car MUST NOT be in Reverse.
             if (isDeadmanActive() && getANSCommandMode() == 1 && !isReverseEngaged()) {
                 if (dmsStartTime == 0) dmsStartTime = millis();
-                if (millis() - dmsStartTime > 1000) currentState = AUTONOMOUS_STATE;
+                if (millis() - dmsStartTime > DMS_HOLD_REQUIRED_MS) {
+                    currentState = AUTONOMOUS_STATE;
+                    // Clear so a subsequent AUTO->MANUAL->AUTO cycle requires
+                    // a fresh 1-second hold instead of re-using the old timestamp.
+                    dmsStartTime = 0;
+                }
             } else {
                 dmsStartTime = 0;
             }
@@ -70,13 +109,24 @@ void updateStateMachine(uint32_t faults) {
             break;
 
         case ESTOP_STATE:
-            // (Legacy state - Hardware E-stop moved to power circuit. 
-            // Retained in case the ANS sends a fatal software kill command).
+            // Terminal state. Reached when an ESTOP-class fault bit is set or
+            // requestSoftwareEstop() is called. estopLatched keeps us here
+            // forever; only a power-cycle (which re-runs initState_Machine)
+            // can clear it. Brake is asserted on entry by the transition
+            // handler below.
             break;
     }
 
-    // --- 3. STATE DEBUGGING ---
+    // --- 3. ENTRY ACTIONS + STATE DEBUGGING ---
     if (currentState != lastState) {
+        // On any transition into a non-driving state, assert the brake
+        // immediately. This closes the hole where FAULT_STATE could be
+        // entered while the pedal was released and vcs_lowbrake's else
+        // branch would leave the optocoupler de-energized.
+        if (!isDrivingState()) {
+            forceBrakeEngagement(true);
+        }
+
         Serial.print("VCS_STATE_MACHINE: Transitioned to ");
         Serial.println(getStateName(currentState));
         lastState = currentState;

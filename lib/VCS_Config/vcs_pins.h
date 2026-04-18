@@ -34,6 +34,12 @@
 #define PIN_SPEED_SW_HIGH     A7  // Input: Physical ON-OFF-ON Switch (High Pos)
 // Note: D11 (Old Speed High) is currently left disconnected/spare.
 #define PIN_REVERSE_IN        A2  // Input: Driver's Reverse Switch (INPUT_PULLUP)
+// WARNING: D13 is the on-board LED on the Nano 33 BLE. Using it as a driven output means:
+//   (a) the LED visibly mirrors reverse state, and
+//   (b) the bootloader briefly toggles D13 at power-up, which can transiently
+//       assert "reverse" on the shifter before the sketch starts.
+// The optocoupler + shifter MUST debounce/ignore sub-100ms pulses, OR this pin should
+// be moved to D11 (currently spare per the old Speed-High note above). PCB rework required.
 #define PIN_REVERSE_OUT       13  // D13 Output: To Shifter -> Controller Yellow Wire
 
 // --- VCS_Steering ---
