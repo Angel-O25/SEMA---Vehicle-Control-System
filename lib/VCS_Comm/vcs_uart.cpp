@@ -201,10 +201,11 @@ void broadcastVehicleTelemetry() {
         rpm = getSimulatedRPM();
         steer = getSimulatedSteering();
         
-        Serial.print("SIM DATA -> RPM: "); Serial.print(rpm);
-        Serial.print(" | Steer: "); Serial.print(steer);
-        Serial.print(" | Gear: "); Serial.print(gear);
-        Serial.print(" | Rev: "); Serial.println(rev);
+        // SECURITY FIX: F() macro applied to prevent SRAM exhaustion
+        Serial.print(F("SIM DATA -> RPM: ")); Serial.print(rpm);
+        Serial.print(F(" | Steer: ")); Serial.print(steer);
+        Serial.print(F(" | Gear: ")); Serial.print(gear);
+        Serial.print(F(" | Rev: ")); Serial.println(rev);
     #else
         rpm = getMeasuredRPM();
         steer = getMeasuredSteering();
@@ -225,12 +226,34 @@ void broadcastVehicleTelemetry() {
 
     uint16_t crc = calculateCRC16(telBuffer, 9);
 
-    ANS_SERIAL.write(0xAA);
-    ANS_SERIAL.write(0x55);
-    ANS_SERIAL.write(telBuffer, 9);
-    ANS_SERIAL.write((crc >> 8) & 0xFF);
-    ANS_SERIAL.write(crc & 0xFF);
-    ANS_SERIAL.write(0xFF);
+    // =========================================================
+    // UNIVERSAL HEX PRINT: Executes in ALL modes
+    // =========================================================
+    Serial.print(F("HEX PAYLOAD: AA 55 "));
+    for(int i = 0; i < 9; i++) {
+        if(telBuffer[i] < 0x10) Serial.print(F("0")); // Add leading zero
+        Serial.print(telBuffer[i], HEX); 
+        Serial.print(F(" "));
+    }
+    
+    if(((crc >> 8) & 0xFF) < 0x10) Serial.print(F("0"));
+    Serial.print((crc >> 8) & 0xFF, HEX); Serial.print(F(" "));
+    
+    if((crc & 0xFF) < 0x10) Serial.print(F("0"));
+    Serial.print(crc & 0xFF, HEX); 
+    Serial.println(F(" FF"));
+
+    // =========================================================
+    // RAW BINARY WRITE: Only executes in LIVE mode
+    // =========================================================
+    #if SIMULATION_MODE == 0
+        ANS_SERIAL.write(0xAA);
+        ANS_SERIAL.write(0x55);
+        ANS_SERIAL.write(telBuffer, 9);
+        ANS_SERIAL.write((crc >> 8) & 0xFF);
+        ANS_SERIAL.write(crc & 0xFF);
+        ANS_SERIAL.write(0xFF);
+    #endif
 }
 
 uint8_t calculateChecksum(const String& payload) {

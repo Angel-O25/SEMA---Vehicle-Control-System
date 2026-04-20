@@ -42,7 +42,11 @@ void initSteering() {
     pinMode(PIN_STEER_PUL, OUTPUT);
     
     // Using 10-bit resolution to sync with the rest of the Nano 33 BLE system
-    analogReadResolution(10); 
+    // Using 10-bit resolution to sync with the rest of the Nano 33 BLE system
+    // The ATmega328 (__AVR__) is natively 10-bit and does not support this function.
+    #ifndef __AVR__
+        analogReadResolution(10); 
+    #endif 
 
     // Initial state: Disabled/Free
     // (Note: On standard TB6600/DM542 stepper drivers, ENA HIGH = Disabled. 

@@ -6,7 +6,7 @@
 // ==========================================
 // System Architecture & Simulation
 // ==========================================
-#define SIMULATION_MODE 1      // 1 = Digital Twin Mode, 0 = 1500W BLDC Control Mode
+#define SIMULATION_MODE 0   // 1 = Digital Twin Mode, 0 = 1500W BLDC Control Mode
 #define V_LOGIC         3.3f   // Strict 3.3V Logic Level for Nano 33 BLE
 
 // Compile-time announcement so the wrong-mode build is obvious in the IDE log

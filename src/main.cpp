@@ -15,31 +15,31 @@
 #include "vcs_simulation.h"
 
 // ============================================================
-//  BOARD-SPECIFIC INCLUDES
+//  BOARD-SPECIFIC SCHEDULING & INCLUDES
 // ============================================================
-#ifdef NANO_33_BLE
+#if defined(NANO_33_BLE)
     #include <mbed.h>
-    using namespace rtos;
-    using namespace mbed;
+    using namespace rtos; 
+    using namespace std::chrono_literals; 
 
-    Thread control_thread(osPriorityRealtime);
-    Thread comm_thread(osPriorityHigh);
-    Thread ui_thread(osPriorityNormal);
+    rtos::Thread control_thread(osPriorityRealtime);
+    rtos::Thread comm_thread(osPriorityHigh);
+    rtos::Thread ui_thread(osPriorityNormal);
 
 #elif defined(NANO_ATMEGA328)
-    #include <SoftwareSerial.h>
     #include <avr/wdt.h>
-
     static uint32_t lastControlTime = 0;
     static uint32_t lastCommTime    = 0;
     static uint32_t lastUITime      = 0;
+
+#elif defined(ESP32_VCS)
+    TaskHandle_t ControlTaskHandle;
 #endif
 
 // ============================================================
-//  TASK DEFINITIONS (shared logic, board-specific scheduling)
+//  TASK LOGIC
 // ============================================================
 
-// --- 1. CONTROL TASK (1 kHz / 1 ms) ---
 void ControlTask() {
     updateHallCalculations();
     updateThrottle(getMeasuredRPM(), getTargetRPM());
@@ -50,55 +50,55 @@ void ControlTask() {
         steerDivider = 0;
     }
 
-    #ifdef NANO_33_BLE
-        Watchdog::get_instance().kick();
+    #if defined(NANO_33_BLE)
+        mbed::Watchdog::get_instance().kick();
     #elif defined(NANO_ATMEGA328)
         wdt_reset();
     #endif
 }
 
-// --- 2. COMM & STATE TASK (100 Hz / 10 ms) ---
+// Update this function above your setup()
 void CommTask() {
     updateDeadman();
     updateLowBrake();
     updateThreeSpeed();
     updateReverse();
-    updateUART();
+    updateUART(); 
+    
+    Serial.println(F(" -> Updating State Machine..."));
     updateStateMachine(0);
+    
+    Serial.println(F(" -> Updating Relays..."));
     updateRelays(isAutonomousMode());
+    
+    Serial.println(F(" -> CommTask Finished!"));
 }
 
-// --- 3. UI & TELEMETRY TASK (20 Hz / 50 ms) ---
 void UITask() {
-    broadcastVehicleTelemetry();
-    updateDisplay(getMeasuredRPM(), getMeasuredSteering(), current_drive_mode);
+    Serial.println(F("   -> Running Telemetry..."));
+    
+    // Test 1: Let's see if the telemetry string builder is crashing the RAM
+    broadcastVehicleTelemetry(); 
+
+    Serial.println(F("   -> Running Display Update..."));
+    
+    // Test 2: Let's see if pushing pixels to the OLED is crashing the I2C bus or RAM
+    //updateDisplay(getMeasuredRPM(), getMeasuredSteering(), current_drive_mode);
+
+    Serial.println(F("   -> UITask Finished!"));
 }
 
 // ============================================================
-//  NANO 33 BLE — MBED THREAD WRAPPERS
+//  THREAD WRAPPERS
 // ============================================================
-#ifdef NANO_33_BLE
-void ControlTaskThread() {
-    auto lastWakeTime = Kernel::Clock::now();
-    for (;;) {
-        ControlTask();
-        ThisThread::sleep_until(lastWakeTime + std::chrono::milliseconds(1));
-        lastWakeTime = Kernel::Clock::now();
-    }
-}
+#if defined(NANO_33_BLE)
+void ControlTaskThread() { while(1) { ControlTask(); rtos::ThisThread::sleep_for(1ms); } }
+void CommTaskThread()    { while(1) { CommTask();    rtos::ThisThread::sleep_for(10ms); } }
+void UITaskThread()      { while(1) { UITask();      rtos::ThisThread::sleep_for(50ms); } }
 
-void CommTaskThread() {
-    for (;;) {
-        CommTask();
-        ThisThread::sleep_for(std::chrono::milliseconds(10));
-    }
-}
-
-void UITaskThread() {
-    for (;;) {
-        UITask();
-        ThisThread::sleep_for(std::chrono::milliseconds(50));
-    }
+#elif defined(ESP32_VCS)
+void ESP32_ControlLoop(void * pvParameters) {
+    for(;;) { ControlTask(); vTaskDelay(1 / portTICK_PERIOD_MS); }
 }
 #endif
 
@@ -106,63 +106,103 @@ void UITaskThread() {
 //  SETUP
 // ============================================================
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(115200); 
     delay(1000);
 
-    #ifdef NANO_33_BLE
-        Serial.println("--- VCS v1.5 SEM AUTONOMOUS BOOTING (NANO 33 BLE) ---");
+    #if defined(NANO_33_BLE)
+        Serial.println(F("--- VCS v1.5: NANO 33 BLE ---"));
+    #elif defined(ESP32_VCS)
+        Serial.println(F("--- VCS v1.5: ESP32 38-PIN ---"));
     #elif defined(NANO_ATMEGA328)
-        Serial.println("--- VCS v1.5 SEM AUTONOMOUS BOOTING (ATMEGA328 NANO) ---");
+        Serial.println(F("--- VCS v1.5: ATMEGA328 NANO ---"));
     #endif
 
-    // Hardware Module Initialization (identical for both boards)
-    initState_Machine();
-    initUART();
-    initThrottle();
-    initLowBrake();
-    initDeadman();
-    initRelays();
-    initSteering();
-    initHallSensors();
-    initThreeSpeed();
-    initReverse();
-    initDisplay();
+    Serial.println(F("\n--- VCS v1.5 DIAGNOSTIC BOOT ---"));
+    Serial.println(F("Testing modules one by one..."));
 
-    // Board-specific watchdog and scheduler startup
-    #ifdef NANO_33_BLE
-        Watchdog::get_instance().start(2000);
+    // Single Initialization Phase
+    Serial.print(F("1. State... ")); 
+    initState_Machine(); 
+    Serial.println(F("OK"));
+    delay(500);
+
+    Serial.print(F("2. UART... ")); 
+    initUART();
+    Serial.println(F("OK"));
+    delay(500);
+
+    Serial.print(F("3. Throttle/Brake... ")); 
+    initThrottle(); 
+    initLowBrake(); 
+    Serial.println(F("OK"));
+    delay(500);
+
+    Serial.print(F("4. Safety... ")); 
+    initDeadman(); 
+    initRelays(); 
+    Serial.println(F("OK"));
+    delay(500);
+
+    Serial.print(F("5. Steering... ")); 
+    initSteering(); 
+    Serial.println(F("OK"));
+    delay(500);
+
+    Serial.print(F("6. Sensors... ")); 
+    initHallSensors(); 
+    initThreeSpeed(); 
+    initReverse(); 
+    Serial.println(F("OK"));
+    delay(500);
+
+    Serial.print(F("7. Display... ")); 
+    // initDisplay(); 
+    Serial.println(F("DISABLED FOR RAM STABILITY"));
+
+    Serial.println(F("--- SURVIVED BOOT SEQUENCE ---"));
+
+    // =========================================================
+    // SECURITY FIX: Removed the duplicate initialization block 
+    // that was causing hardware interrupts to re-trigger.
+    // =========================================================
+
+    #if defined(NANO_33_BLE)
+        mbed::Watchdog::get_instance().start(2000);
         control_thread.start(ControlTaskThread);
         comm_thread.start(CommTaskThread);
         ui_thread.start(UITaskThread);
-
-    #elif defined(NANO_ATMEGA328)
-        wdt_enable(WDTO_2S);
+    #elif defined(ESP32_VCS)
+        xTaskCreatePinnedToCore(ESP32_ControlLoop, "Control", 4096, NULL, 10, &ControlTaskHandle, 1);
     #endif
 }
 
 // ============================================================
 //  LOOP
 // ============================================================
-void loop() {
-    #ifdef NANO_33_BLE
-        // Mbed OS owns scheduling; loop() is just the idle thread
-        ThisThread::sleep_for(std::chrono::milliseconds(1000));
 
-    #elif defined(NANO_ATMEGA328)
+// Update your loop() at the bottom
+void loop() {
+    #if defined(NANO_ATMEGA328)
         uint32_t now = millis();
 
-        if (now - lastControlTime >= 1) {
+        // Slowed down from 1ms to 1000ms (1 second) for debugging
+        if (now - lastControlTime >= 1000) { 
             lastControlTime = now;
+            Serial.println(F("[LOOP] Running ControlTask..."));
             ControlTask();
         }
 
-        if (now - lastCommTime >= 10) {
+        // Slowed down from 10ms to 1000ms
+        if (now - lastCommTime >= 1000) { 
             lastCommTime = now;
+            Serial.println(F("[LOOP] Running CommTask..."));
             CommTask();
         }
 
-        if (now - lastUITime >= 50) {
+        // Slowed down from 50ms to 1000ms
+        if (now - lastUITime >= 1000) { 
             lastUITime = now;
+            Serial.println(F("[LOOP] Running UITask..."));
             UITask();
         }
     #endif
