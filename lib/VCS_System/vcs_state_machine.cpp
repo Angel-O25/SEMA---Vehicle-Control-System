@@ -5,6 +5,7 @@
 #include "vcs_lowbrake.h"
 #include "vcs_throttle.h"   // [ADDED] For the pedal override check
 #include "vcs_reverse.h"
+#include "vcs_web.h"
 
 VcsState currentState = INIT_STATE;
 uint32_t dmsStartTime = 0;
@@ -60,25 +61,35 @@ void updateStateMachine(uint32_t faults) {
 
     // --- 2. STATE TRANSITION LOGIC ---
     switch (currentState) {
-        case INIT_STATE:
-            // Boot delay for sensor stabilization
-            if (millis() > 2000) currentState = IDLE_STATE;
-            break;
+    case INIT_STATE:
+        if (millis() > 2000) currentState = IDLE_STATE;
+        break;
 
-        case IDLE_STATE:
-            // Wait for ANS to be alive before allowing Manual mode
-            if (ansHeartbeatReceived()) currentState = MANUAL_STATE;
-            break;
+    case IDLE_STATE:
+        // [FIX] The ESP32 owns the car. Move to MANUAL immediately.
+        // We don't wait for the Jetson's heartbeat just to let a human drive.
+        currentState = MANUAL_STATE; 
+        break;
 
-        case MANUAL_STATE:
-            // Transition to Auto: Requires physical DMS AND gate hold (1.0s), 
-            // the ANS requesting Auto Mode (1), AND the car MUST NOT be in Reverse.
-            if (isDeadmanActive() && getANSCommandMode() == 1 && !isReverseEngaged()) {
-                if (dmsStartTime == 0) dmsStartTime = millis();
-                if (millis() - dmsStartTime > DMS_HOLD_REQUIRED_MS) {
-                    currentState = AUTONOMOUS_STATE;
-                    // Clear so a subsequent AUTO->MANUAL->AUTO cycle requires
-                    // a fresh 1-second hold instead of re-using the old timestamp.
+    case MANUAL_STATE:
+            // ESP32 IS THE BOSS: DMS is the primary condition
+            if (isDeadmanActive() && !isReverseEngaged()) {
+                
+                // Secondary check: Is the Jetson actually ready/requesting?
+                if (getANSCommandMode() == 1) { 
+                    if (dmsStartTime == 0) {
+                        dmsStartTime = millis();
+                        vcs_log("DMS HELD: Starting 1s countdown for AUTO...");
+                    }
+                    
+                    if (millis() - dmsStartTime > DMS_HOLD_REQUIRED_MS) {
+                        currentState = AUTONOMOUS_STATE;
+                        dmsStartTime = 0;
+                        vcs_log("FSM: Transition to AUTONOMOUS.");
+                    }
+                } else {
+                    // Log why we aren't switching
+                    if(millis() % 2000 == 0) vcs_log("WAITING: Jetson UART must send AUTO (1) command.");
                     dmsStartTime = 0;
                 }
             } else {
@@ -87,17 +98,16 @@ void updateStateMachine(uint32_t faults) {
             break;
 
         case AUTONOMOUS_STATE:
-            // EXIT TO MANUAL IF:
-            // 1. Physical Brake is pressed (Rule 412c Hard Override)
-            // 2. Physical Throttle is pressed (Rule 412c Hard Override)
-            // 3. Either DMS button is released (Rule 412f Safety requirement)
-            // 4. ANS sends a Manual request (Soft override)
-            if (isPhysicalBrakePressed() || 
-                isThrottlePedalPressed() || 
-                !isDeadmanActive() || 
-                getANSCommandMode() == 0) {
-                
+            // PHYSICAL OVERRIDES (ESP32 POWER)
+            if (isPhysicalBrakePressed() || isThrottlePedalPressed() || !isDeadmanActive()) {
                 currentState = MANUAL_STATE;
+                vcs_log("SAFETY: Physical override detected. BACK TO MANUAL.");
+            }
+            
+            // Soft Overrides (Jetson requests)
+            else if (getANSCommandMode() == 2 || !ansHeartbeatReceived()) {
+                currentState = MANUAL_STATE;
+                vcs_log("LINK: Jetson soft-exit or heartbeat lost.");
             }
             break;
             
@@ -117,15 +127,22 @@ void updateStateMachine(uint32_t faults) {
             break;
     }
 
-    // --- 3. ENTRY ACTIONS + STATE DEBUGGING ---
+// --- 3. ENTRY ACTIONS + STATE DEBUGGING ---
     if (currentState != lastState) {
-        // On any transition into a non-driving state, assert the brake
-        // immediately. This closes the hole where FAULT_STATE could be
-        // entered while the pedal was released and vcs_lowbrake's else
-        // branch would leave the optocoupler de-energized.
         if (!isDrivingState()) {
             forceBrakeEngagement(true);
         }
+
+        #if defined(ESP32_VCS)
+            // Securely attach/detach Hall interrupts based on active state
+            if (currentState == IDLE_STATE && lastState == INIT_STATE) {
+                extern void hall_interrupts_attach();
+                hall_interrupts_attach();
+            } else if (currentState == FAULT_STATE || currentState == ESTOP_STATE) {
+                extern void hall_interrupts_detach();
+                hall_interrupts_detach();
+            }
+        #endif
 
         Serial.print("VCS_STATE_MACHINE: Transitioned to ");
         Serial.println(getStateName(currentState));

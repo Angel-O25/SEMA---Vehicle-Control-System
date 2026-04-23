@@ -1,5 +1,11 @@
 #include "vcs_steering.h"
 
+#if defined(ESP32_VCS)
+    #include "esp_adc_cal.h"
+    #include "driver/adc.h"
+    extern esp_adc_cal_characteristics_t adc_chars; // Pull the calibration profile initialized in vcs_throttle
+#endif
+
 // EMA Smoothing for Steering Input
 float smoothedSteering = 0.0f;
 const float emaAlphaSteering = 0.15f; // 0.15 is the smoothing weight (f-suffix forces float math, not double)
@@ -39,20 +45,29 @@ void initSteering() {
     pinMode(PIN_STEER_POT, INPUT);
     pinMode(PIN_STEER_DIR, OUTPUT);
     pinMode(PIN_STEER_ENA, OUTPUT);
-    pinMode(PIN_STEER_PUL, OUTPUT);
-    
-    // Using 10-bit resolution to sync with the rest of the Nano 33 BLE system
-    // Using 10-bit resolution to sync with the rest of the Nano 33 BLE system
-    // The ATmega328 (__AVR__) is natively 10-bit and does not support this function.
-    #ifndef __AVR__
-        analogReadResolution(10); 
-    #endif 
 
-    // Initial state: Disabled/Free
-    // (Note: On standard TB6600/DM542 stepper drivers, ENA HIGH = Disabled. 
-    // Leave this LOW if your specific driver requires LOW to disable).
+    #if defined(ESP32_VCS)
+        // Explicitly initialize LEDC Channel 0 to prevent RTOS panics
+        ledcSetup(0, 1000, 8); // Channel 0, 1kHz baseline, 8-bit res
+        ledcAttachPin(PIN_STEER_PUL, 0);
+    #else
+        pinMode(PIN_STEER_PUL, OUTPUT);
+    #endif
+    
+    #if defined(ESP32_VCS)
+        // Configure ADC1 Channel 7 (GPIO 35) for the Steering Potentiometer
+        adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_12);
+    #elif !defined(__AVR__)
+        analogReadResolution(10); 
+    #endif
+
     digitalWrite(PIN_STEER_ENA, HIGH); 
-    noTone(PIN_STEER_PUL); // Ensure stepper is not pulsing
+    
+    #if defined(ESP32_VCS)
+        ledcWrite(0, 0); // 0% duty cycle = no pulses
+    #else
+        noTone(PIN_STEER_PUL); 
+    #endif
 
     // QuickPID Configuration
     steeringPID.SetTunings(STEER_KP, STEER_KI, STEER_KD);
@@ -71,7 +86,19 @@ uint16_t getMeasuredSteering() {
 #else
     // --- EMA FILTER INJECTION ---
     // Read the raw noisy pin
-    int rawSteering = analogRead(PIN_STEER_POT);
+    #if defined(ESP32_VCS)
+        // Take a 16-sample hardware average for maximum stability
+        uint32_t sum = 0;
+        for (int i = 0; i < 16; i++) sum += adc1_get_raw(ADC1_CHANNEL_7);
+        uint32_t pot_mv = esp_adc_cal_raw_to_voltage(sum / 16, &adc_chars);
+        
+        // Map 0-3300mV back to the 0-1023 scale the legacy EMA math expects
+        int rawSteering = map(pot_mv, 0, 3300, 0, 1023);
+    #else
+        int rawSteering = analogRead(PIN_STEER_POT);
+    #endif
+
+    // DISCONNECTION CHECK (Hardware Security)
 
     // DISCONNECTION CHECK (Hardware Security)
     // Run on RAW value BEFORE the EMA, otherwise a glitch gets smoothed
@@ -121,9 +148,15 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
 
     // --- SECURITY OVERRIDE ---
     if (!is_automatic || currentState == FAULT_STATE || currentState == ESTOP_STATE) {
-        digitalWrite(PIN_STEER_ENA, HIGH); // Disable motor (verify this matches your driver spec!)
-        noTone(PIN_STEER_PUL);
-        s_last_freq_hz = -1; // Invalidate tone cache so next active call reprograms
+        digitalWrite(PIN_STEER_ENA, HIGH); 
+        
+        #if defined(ESP32_VCS)
+            ledcWrite(0, 0); // Hardware stop
+        #else
+            noTone(PIN_STEER_PUL);
+        #endif
+        
+        s_last_freq_hz = -1; 
         return;
     }
 
@@ -132,10 +165,16 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     // Deadband check
     // Use fabsf() for floats. Arduino's abs() is a macro that double-evaluates
     // its argument (so "setpoint - input" would be computed twice).
+    // Deadband check
     if (fabsf(setpoint - input) < STEER_DEADZONE) {
-        noTone(PIN_STEER_PUL);
+        #if defined(ESP32_VCS)
+            ledcWrite(0, 0); // Stop pulses, hold position
+        #else
+            noTone(PIN_STEER_PUL);
+        #endif
+        
         digitalWrite(PIN_STEER_ENA, LOW); // Enable motor holding torque
-        s_last_freq_hz = -1; // Invalidate tone cache so next active call reprograms
+        s_last_freq_hz = -1; 
         return;
     }
 
@@ -167,12 +206,17 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     if (s_sim_steer_pos_f > (float)COMM_STEER_RIGHT) s_sim_steer_pos_f = (float)COMM_STEER_RIGHT;
     sim_steer_pos = (uint16_t)s_sim_steer_pos_f;
 #else
-    // Only reprogram tone() when frequency changes meaningfully. On Mbed
-    // Nano 33 BLE, tone() reconfigures a Ticker/PWM on every call, which
-    // introduces jitter and isn't free at 100 Hz control rate.
-    static bool s_last_dir = false; // function-scope: only used in this branch
+    static bool s_last_dir = false; 
     if (abs(step_frequency_hz - s_last_freq_hz) > 5 || dir != s_last_dir) {
-        tone(PIN_STEER_PUL, step_frequency_hz);
+        #if defined(ESP32_VCS)
+            // ESP32 v2.0.17 LEDC Hardware Timer Implementation
+            ledcSetup(0, step_frequency_hz, 8); // Channel 0, frequency, 8-bit res
+            ledcAttachPin(PIN_STEER_PUL, 0);
+            ledcWrite(0, 128); // 50% duty cycle for the pulse
+        #else
+            tone(PIN_STEER_PUL, step_frequency_hz);
+        #endif
+        
         s_last_freq_hz = step_frequency_hz;
         s_last_dir = dir;
     }

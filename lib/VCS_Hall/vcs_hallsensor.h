@@ -8,6 +8,8 @@
 
 // Volatile variables for ISR communication
 void initHallSensors();
+void hall_interrupts_attach();
+void hall_interrupts_detach();
 
 // Hall sensor processing logic, called from the ControlTask thread
 void updateHallCalculations();

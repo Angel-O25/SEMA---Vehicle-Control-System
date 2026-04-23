@@ -100,14 +100,37 @@ void UITaskThread()      { while(1) { UITask();      rtos::ThisThread::sleep_for
 void ESP32_ControlLoop(void * pvParameters) {
     for(;;) { ControlTask(); vTaskDelay(1 / portTICK_PERIOD_MS); }
 }
+void ESP32_CommLoop(void * pvParameters) {
+    for(;;) { CommTask(); vTaskDelay(10 / portTICK_PERIOD_MS); }
+}
+void ESP32_UILoop(void * pvParameters) {
+    for(;;) { UITask(); vTaskDelay(50 / portTICK_PERIOD_MS); }
+}
 #endif
 
 // ============================================================
 //  SETUP
 // ============================================================
 void setup() {
+    #if defined(ESP32_VCS)
+        dacWrite(25, 0); // CRITICAL SECURITY: ABSOLUTE FIRST INSTRUCTION
+    #endif
+
+    #if defined(ESP32_VCS)
+        // Display Task pinned to Core 1 at Lowest Priority
+        xTaskCreatePinnedToCore(
+            [](void *pvParameters) {
+                initDisplay();
+                for(;;) {
+                    updateDisplay(getMeasuredRPM(), getMeasuredSteering(), current_drive_mode);
+                    vTaskDelay(50 / portTICK_PERIOD_MS); // 20Hz UI refresh
+                }
+            }, 
+            "Display", 4096, NULL, 1, NULL, 1);
+    #endif
+
     Serial.begin(115200); 
-    delay(1000);
+    Serial2.begin(115200, SERIAL_8N1, 16, 17);
 
     #if defined(NANO_33_BLE)
         Serial.println(F("--- VCS v1.5: NANO 33 BLE ---"));
@@ -156,26 +179,29 @@ void setup() {
     delay(500);
 
     Serial.print(F("7. Display... ")); 
-    // initDisplay(); 
-    Serial.println(F("DISABLED FOR RAM STABILITY"));
+    initDisplay(); 
+    Serial.println(F("OK"));
 
     Serial.println(F("--- SURVIVED BOOT SEQUENCE ---"));
 
-    // =========================================================
-    // SECURITY FIX: Removed the duplicate initialization block 
-    // that was causing hardware interrupts to re-trigger.
-    // =========================================================
-
     #if defined(NANO_33_BLE)
-        mbed::Watchdog::get_instance().start(2000);
-        control_thread.start(ControlTaskThread);
-        comm_thread.start(CommTaskThread);
-        ui_thread.start(UITaskThread);
-    #elif defined(ESP32_VCS)
-        xTaskCreatePinnedToCore(ESP32_ControlLoop, "Control", 4096, NULL, 10, &ControlTaskHandle, 1);
-    #endif
+            mbed::Watchdog::get_instance().start(2000);
+            control_thread.start(ControlTaskThread);
+            comm_thread.start(CommTaskThread);
+            ui_thread.start(UITaskThread);
+        #elif defined(ESP32_VCS)
+            // Task pinning to match technical specifications
+            xTaskCreatePinnedToCore(ESP32_ControlLoop, "Control", 4096, NULL, 5, &ControlTaskHandle, 1); // Core 1 (Motor Control)
+            
+            // Register the missing Comms and UI Tasks!
+            xTaskCreatePinnedToCore(ESP32_CommLoop, "Comms", 4096, NULL, 4, NULL, 0); // Core 0 (Network/Comms)
+            xTaskCreatePinnedToCore(ESP32_UILoop, "UI", 4096, NULL, 2, NULL, 0);      // Core 0 (Telemetry)
+            
+            // Spin up the AP Web Server safely on Core 1 alongside control
+            extern void WebServerTask(void *pvParameters);
+            xTaskCreatePinnedToCore(WebServerTask, "WebServer", 4096, NULL, 1, NULL, 1);
+        #endif
 }
-
 // ============================================================
 //  LOOP
 // ============================================================

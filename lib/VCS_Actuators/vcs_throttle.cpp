@@ -5,6 +5,12 @@
 #include "vcs_pins.h"
 #include "vcs_hallsensor.h" // For consumeNewRPMSample()
 
+#if defined(ESP32_VCS)
+    #include "esp_adc_cal.h"
+    #include "driver/adc.h"
+    esp_adc_cal_characteristics_t adc_chars;
+#endif
+
 // Global Telemetry Variables
 uint16_t current_throttle_adc = 0;
 uint16_t current_pwm_duty = 0;
@@ -24,6 +30,13 @@ QuickPID speedPID(&measured_rpm, &throttle_pwm_out, &target_rpm);
 void initThrottle() {
     pinMode(PIN_THROTTLE_OUT, OUTPUT);
     pinMode(PIN_THROTTLE_IN, INPUT);
+
+    #if defined(ESP32_VCS)
+        // Factory eFuse calibrated ADC
+        adc1_config_width(ADC_WIDTH_BIT_12);
+        adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_12); // GPIO 34
+        esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+    #endif
 
     // Sync Nano 33 BLE hardware to the 10-bit standard (0-1023).
     // The Arduino Nano 33 BLE core does NOT define "NANO_33_BLE" — the actual
@@ -51,7 +64,17 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
     // --- EMA FILTER INJECTION ---
     // All literals are float ('f' suffix) to avoid double-precision promotion,
     // which is software-emulated on the Cortex-M4F (~10x slower than float).
-    int rawThrottle = analogRead(PIN_THROTTLE_IN);
+    // --- EMA FILTER INJECTION ---
+    #if defined(ESP32_VCS)
+        uint32_t sum = 0;
+        for (int i = 0; i < 16; i++) sum += adc1_get_raw(ADC1_CHANNEL_6);
+        uint32_t pedal_mv = esp_adc_cal_raw_to_voltage(sum / 16, &adc_chars);
+        // Map 0-3300mV back to the 0-1023 scale your legacy EMA math expects
+        int rawThrottle = map(pedal_mv, 0, 3300, 0, 1023); 
+    #else
+        int rawThrottle = analogRead(PIN_THROTTLE_IN);
+    #endif
+
     smoothedThrottle = (emaAlphaThrottle * (float)rawThrottle)
                      + ((1.0f - emaAlphaThrottle) * smoothedThrottle);
     current_throttle_adc = (uint16_t)smoothedThrottle;
@@ -72,7 +95,13 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
     // If the state machine says we shouldn't be driving OR driver hits the brake
     if ((currentState != AUTONOMOUS_STATE && currentState != MANUAL_STATE) || isBrakePressed) {
         current_pwm_duty = MIN_PWM_OUT;
-        analogWrite(PIN_THROTTLE_OUT, current_pwm_duty);
+        #if defined(ESP32_VCS)
+            // Map the 0-1023 PI output down to 0-255 for the 8-bit true DAC
+            int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
+            dacWrite(25, constrain(dac_val, 0, 255));
+        #else
+            analogWrite(PIN_THROTTLE_OUT, current_pwm_duty);
+        #endif
         
         speedPID.SetMode(QuickPID::Control::manual);
         throttle_pwm_out = MIN_PWM_OUT;
@@ -100,7 +129,13 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
         // accelerating windup and producing a sluggish Ki response.
         if (consumeNewRPMSample() && speedPID.Compute()) {
             current_pwm_duty = (uint16_t)throttle_pwm_out;
+            #if defined(ESP32_VCS)
+            // Map the 0-1023 PI output down to 0-255 for the 8-bit true DAC
+            int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
+            dacWrite(25, constrain(dac_val, 0, 255));
+        #else
             analogWrite(PIN_THROTTLE_OUT, current_pwm_duty);
+        #endif
         }
     } 
     // --- 3. MANUAL CONTROL (Pass-Through) ---
@@ -114,7 +149,13 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
         }
         
         current_pwm_duty = mapped_pwm;
-        analogWrite(PIN_THROTTLE_OUT, current_pwm_duty);
+        #if defined(ESP32_VCS)
+            // Map the 0-1023 PI output down to 0-255 for the 8-bit true DAC
+            int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
+            dacWrite(25, constrain(dac_val, 0, 255));
+        #else
+            analogWrite(PIN_THROTTLE_OUT, current_pwm_duty);
+        #endif
         
         // BUMPLESS TRANSFER: 
         throttle_pwm_out = mapped_pwm;

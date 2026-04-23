@@ -9,11 +9,17 @@
 
 void initRelays() {
     pinMode(PIN_RELAY_STROBE, OUTPUT);
-    pinMode(PIN_RELAY_STATE, OUTPUT);
+    
+    #if !defined(ESP32_VCS)
+        pinMode(PIN_RELAY_STATE, OUTPUT);
+    #endif
 
     // Default to Manual Mode on boot (Safe State)
     digitalWrite(PIN_RELAY_STROBE, RELAY_DEENERGIZED);
-    digitalWrite(PIN_RELAY_STATE, RELAY_DEENERGIZED);
+    
+    #if !defined(ESP32_VCS)
+        digitalWrite(PIN_RELAY_STATE, RELAY_DEENERGIZED);
+    #endif
 }
 
 void updateRelays(bool isAutonomous) {
@@ -22,15 +28,19 @@ void updateRelays(bool isAutonomous) {
         // 1. Strobe: Relay energized -> NO contact closes -> 12V flows to Orange Strobe
         digitalWrite(PIN_RELAY_STROBE, RELAY_ENERGIZED);
         
-        // 2. Organizer State: Relay energized -> NO contact closes (Signals Auto to Telemetry)
-        digitalWrite(PIN_RELAY_STATE, RELAY_ENERGIZED);
+        #if !defined(ESP32_VCS)
+            // 2. Organizer State: Relay energized
+            digitalWrite(PIN_RELAY_STATE, RELAY_ENERGIZED);
+        #endif
         
     } else {
         // --- MANUAL MODE ---
         // 1. Strobe: Relay de-energized -> NO contact opens -> Strobe turns OFF
         digitalWrite(PIN_RELAY_STROBE, RELAY_DEENERGIZED);
         
-        // 2. Organizer State: Relay de-energized -> NC contact closes (Signals Manual to Telemetry)
-        digitalWrite(PIN_RELAY_STATE, RELAY_DEENERGIZED);
+        #if !defined(ESP32_VCS)
+            // 2. Organizer State: Relay de-energized 
+            digitalWrite(PIN_RELAY_STATE, RELAY_DEENERGIZED);
+        #endif
     }
 }

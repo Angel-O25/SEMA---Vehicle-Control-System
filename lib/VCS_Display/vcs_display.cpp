@@ -7,7 +7,10 @@
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 
 void initDisplay() {
-    // [REMOVED] pinMode(PIN_LED_FAULT, OUTPUT); -> Handled by vcs_relays.cpp now
+    #if defined(ESP32_VCS)
+        // Explicitly assign I2C pins for ESP32 v2.0.17 to prevent defaults routing elsewhere
+        Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    #endif
 
     if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         // Log I2C failure if necessary

@@ -15,23 +15,29 @@ static float speed_limit_multiplier = 0.60f; // Default to 60% on boot
 static const uint8_t SPEED_DEBOUNCE_TICKS = 3;
 
 void initThreeSpeed() {
-    // Enable internal pull-ups so grounding the pins gives a clean LOW
-    pinMode(PIN_SPEED_SW_LOW, INPUT_PULLUP);
-    pinMode(PIN_SPEED_SW_HIGH, INPUT_PULLUP);
+    #if !defined(ESP32_VCS)
+        // Legacy Nano requires internal pull-ups for physical pins
+        pinMode(PIN_SPEED_SW_LOW, INPUT_PULLUP);
+        pinMode(PIN_SPEED_SW_HIGH, INPUT_PULLUP);
+    #endif
     
-    // Note: pinMode OUTPUTS for physical speed wires were removed 
-    // because D12 was repurposed for the Organizer Relay in V1.5.
-
     setDriveMode(DRIVE_MED); // Default on boot
 }
 
 void updateThreeSpeed() {
+    #if defined(ESP32_VCS)
+        // Hardware switches are deprecated in the ESP32 layout.
+        // Lock to 100% capacity; Jetson handles speed limiting via target RPM.
+        if (current_drive_mode != DRIVE_HIGH) {
+            setDriveMode(DRIVE_HIGH);
+        }
+        return; // Bypass physical pin polling entirely
+    #endif
 
+    // --- LEGACY NANO LOGIC BELOW ---
     bool swLow = (digitalRead(PIN_SPEED_SW_LOW) == LOW);
     bool swHigh = (digitalRead(PIN_SPEED_SW_HIGH) == LOW);
 
-    // Decide the raw requested mode this tick. Center position
-    // (neither pin grounded) defaults to MED.
     DriveMode rawMode;
     if (swLow) {
         rawMode = DRIVE_LOW;
@@ -41,22 +47,18 @@ void updateThreeSpeed() {
         rawMode = DRIVE_MED;
     }
 
-    // Debounce: only commit the change once the same mode has been
-    // seen for SPEED_DEBOUNCE_TICKS consecutive ticks.
     static DriveMode pendingMode = DRIVE_MED;
     static uint8_t   pendingCount = 0;
 
     if (rawMode == current_drive_mode) {
-        // Already there — discard any in-progress pending change.
         pendingCount = 0;
     } else if (rawMode == pendingMode) {
-        if (pendingCount < SPEED_DEBOUNCE_TICKS) pendingCount++;
-        if (pendingCount >= SPEED_DEBOUNCE_TICKS) {
+        if (pendingCount < 3) pendingCount++;
+        if (pendingCount >= 3) {
             setDriveMode(pendingMode);
             pendingCount = 0;
         }
     } else {
-        // New candidate — restart the counter.
         pendingMode = rawMode;
         pendingCount = 1;
     }

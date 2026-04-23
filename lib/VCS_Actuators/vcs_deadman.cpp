@@ -1,5 +1,6 @@
 #include "vcs_deadman.h"
 #include "vcs_pins.h"
+#include "vcs_web.h" // [CRITICAL ADDITION] Grants access to global simulation flags
 
 // Internal State Variables
 static bool leftGripPressed = false;
@@ -11,16 +12,27 @@ static bool autoStateRequested = false;
 const uint8_t DEBOUNCE_TICKS = 3; 
 
 void initDeadman() {
-    // Enable internal pull-up resistors (Active Low hardware design)
-    // Unpressed = HIGH (5V/3.3V), Pressed = LOW (0V/GND)
-    pinMode(PIN_DMS_LEFT, INPUT_PULLUP);
-    pinMode(PIN_DMS_RIGHT, INPUT_PULLUP);
+    #if defined(ESP32_VCS)
+        // ESP32 Hardware Design: Active HIGH, firmware pull-down
+        // Unpressed = LOW, Pressed = HIGH to 3.3V
+        pinMode(PIN_DMS_LEFT, INPUT_PULLDOWN);
+        pinMode(PIN_DMS_RIGHT, INPUT_PULLDOWN);
+    #else
+        pinMode(PIN_DMS_LEFT, INPUT_PULLUP);
+        pinMode(PIN_DMS_RIGHT, INPUT_PULLUP);
+    #endif
 }
 
 void updateDeadman() {
-    // 1. Read Raw Hardware States (LOW means the button is pressed)
-    bool rawLeft  = (digitalRead(PIN_DMS_LEFT) == LOW);
-    bool rawRight = (digitalRead(PIN_DMS_RIGHT) == LOW);
+    #if defined(ESP32_VCS)
+        // 1. Read Raw Hardware States (HIGH means the button is pressed)
+        bool rawLeft  = (digitalRead(PIN_DMS_LEFT) == HIGH);
+        bool rawRight = (digitalRead(PIN_DMS_RIGHT) == HIGH);
+    #else
+        // 1. Read Raw Hardware States (LOW means the button is pressed)
+        bool rawLeft  = (digitalRead(PIN_DMS_LEFT) == LOW);
+        bool rawRight = (digitalRead(PIN_DMS_RIGHT) == LOW);
+    #endif
 
     // Static counters for debouncing memory
     static uint8_t leftCounter = 0;
@@ -53,6 +65,7 @@ void updateDeadman() {
     }
 }
 
-bool isDeadmanActive() {
+bool isDeadmanActive() {    
+    // --- LIVE HARDWARE MODE ---
     return autoStateRequested;
 }

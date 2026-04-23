@@ -8,14 +8,15 @@
 static bool reverseEngaged = false;
 
 void initReverse() {
-    // Input: Driver's physical switch (LOW means they flipped it)
-    pinMode(PIN_REVERSE_IN, INPUT_PULLUP);
-    
-    // Output: To Level Shifter -> Motor Controller Yellow Wire
-    pinMode(PIN_REVERSE_OUT, OUTPUT);
-    
-    // Start in forward mode (HIGH = inactive/forward for the controller)
-    digitalWrite(PIN_REVERSE_OUT, HIGH); 
+    #if defined(ESP32_VCS)
+        // PCB has a physical 10k pull-UP. Configure as plain INPUT to prevent fighting the PCB.
+        pinMode(PIN_REVERSE_IN, INPUT);
+        // PIN_REVERSE_OUT is deprecated on ESP32; reverse is a hardware passthrough
+    #else
+        pinMode(PIN_REVERSE_IN, INPUT_PULLUP);
+        pinMode(PIN_REVERSE_OUT, OUTPUT);
+        digitalWrite(PIN_REVERSE_OUT, HIGH); 
+    #endif
 }
 
 void updateReverse() {
@@ -76,12 +77,18 @@ void updateReverse() {
 
     // --- 5. HARDWARE ACTUATION ---
     if (triggerReverse) {
-        digitalWrite(PIN_REVERSE_OUT, LOW); // Pull Yellow wire to Ground
+        #if !defined(ESP32_VCS)
+            digitalWrite(PIN_REVERSE_OUT, LOW); // Pull Yellow wire to Ground
+        #endif
         reverseEngaged = true;
     } else {
-        digitalWrite(PIN_REVERSE_OUT, HIGH); // Release Yellow wire (Forward)
+        #if !defined(ESP32_VCS)
+            digitalWrite(PIN_REVERSE_OUT, HIGH); // Release Yellow wire (Forward)
+        #endif
         reverseEngaged = false;
     }
+    // On ESP32, the physical switch directly pulls the TXB0108 line LOW, 
+    // so we only track the logical state here for telemetry.
 }
 
 bool isReverseEngaged() {

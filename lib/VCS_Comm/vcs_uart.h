@@ -4,6 +4,11 @@
 #include <Arduino.h>
 #include "vcs_pins.h"
 #include "vcs_constants.h"
+#include "vcs_threespeed.h"
+
+
+
+extern DriveMode current_drive_mode; // Explicitly pull the variable from vcs_threespeed.cpp
 
 // Core UART functions
 void initUART();

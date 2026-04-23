@@ -1,33 +1,37 @@
 #include "vcs_hallsensor.h"
-#include "vcs_pins.h" // Ensure pins are included for PIN_HALL_SPEED
+#include "vcs_pins.h"
 
-// Volatile variables are required for data shared with Interrupt Service Routines (ISRs)
 volatile uint32_t hall_pulse_count = 0;
 uint32_t last_calc_time = 0;
 float current_rpm = 0.0f;
-
-// Set to true each time a new RPM value is computed; cleared by
-// consumeNewRPMSample(). Lets the 1 kHz throttle PID skip Compute() on
-// ticks where the 10 Hz Hall measurement hasn't updated.
 static bool s_new_rpm_sample = false;
 
-// The ISR: Runs every time the Controller's Yellow Wire pulses HIGH
-// REMOVED IRAM_ATTR: Not required/supported on Nano 33 BLE (Mbed OS)
+// 1. MUST be declared before attachInterrupt uses it
 void handleHallInterrupt() {
     hall_pulse_count++;
 }
 
 void initHallSensors() {
-    // The signal now comes from the 5V Level Shifter to D10.
-    // INPUT_PULLUP provides noise immunity if the wire ever vibrates loose.
-    pinMode(PIN_HALL_SPEED, INPUT_PULLUP);
-    
-    // Attach interrupt to the new Speed Pin. 
-    // Changed from CHANGE to RISING because the controller outputs a clean square wave.
-    attachInterrupt(digitalPinToInterrupt(PIN_HALL_SPEED), handleHallInterrupt, RISING);
+    #if defined(ESP32_VCS)
+        // ESP32 supports internal pulldowns
+        pinMode(PIN_HALL_SPEED, INPUT_PULLDOWN); 
+    #else
+        // ATmega328 ONLY supports internal pullups
+        pinMode(PIN_HALL_SPEED, INPUT_PULLUP);
+    #endif
     
     last_calc_time = millis();
 }
+
+void hall_interrupts_attach() {
+    attachInterrupt(digitalPinToInterrupt(PIN_HALL_SPEED), handleHallInterrupt, RISING);
+}
+
+void hall_interrupts_detach() {
+    detachInterrupt(digitalPinToInterrupt(PIN_HALL_SPEED));
+}
+
+// ... [KEEP YOUR updateHallCalculations() AND THE REST OF THE FILE INTACT BELOW] ...
 
 void updateHallCalculations() {
     uint32_t now = millis();

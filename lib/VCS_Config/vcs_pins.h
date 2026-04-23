@@ -4,51 +4,44 @@
 #include <Arduino.h>
 
 // ==============================================================================
-// MODULE:      VCS_Pins (Arduino Nano 33 BLE)
-// DESCRIPTION: Centralized pin definitions mapped directly to manual PCB V1.4.
-//              *REVISED FOR SHELL ECO-MARATHON AUTONOMOUS RULES*
+// MODULE:      VCS_Pins (ESP32-WROOM-32 38-pin)
+// DESCRIPTION: Mapped for Shell Eco-marathon 2026 Autonomous Vehicle
 // ==============================================================================
 
-// --- VCS_Displays & Relays ---
-#define PIN_OLED_SDA          A4  // I2C SDA
-#define PIN_OLED_SCL          A5  // I2C SCL
-#define PIN_RELAY_STROBE      A6  // D/A6 Output: 12V Orange Autonomous Beacon (Was Fault LED)
-#define PIN_RELAY_STATE       12  // D12 Output: Organizer Auto/Manual Relay (Repurposed from Speed Low)
+// --- Sensors & ADCs ---
+#define PIN_HALL_A         36  // Input-only (via TXB0108)
+#define PIN_HALL_B         39  // Input-only (via TXB0108)
+#define PIN_HALL_SPEED     32  // Replaces legacy D10 (Hall C / Speed)
+#define PIN_THROTTLE_IN    34  // ADC1_CH6 (Voltage Divider)
+#define PIN_STEER_POT      35  // ADC1_CH7 (3590S)
 
-// --- VCS_Comm ---
-#define PIN_UART_RX           0   // D0 (RX from RPi TX)
-#define PIN_UART_TX           1   // D1 (TX to RPi RX)
+// --- Switches (Digital Inputs) ---
+#define PIN_DMS_LEFT       33  // Active HIGH
+#define PIN_DMS_RIGHT      27  // Active HIGH
+#define PIN_LOWBRAKE_IN    14  // Replaces legacy D8
+#define PIN_LIMIT_SWITCH   13  // Brake actuator limit
+#define PIN_REVERSE_IN     26  // Active LOW, 10k PCB pull-up
+#define PIN_SPEED_SW_LOW   255 // DEPRECATED: Handled by Jetson/UART now
+#define PIN_SPEED_SW_HIGH  255 // DEPRECATED: Handled by Jetson/UART now
 
-// --- VCS_Actuators (Primary Drive) ---
-#define PIN_THROTTLE_IN       A1  // Input: Physical Throttle Pedal (0-3.3V)
-#define PIN_THROTTLE_OUT      9   // D9 Output: PWM to RC Filter & LM358 Op-Amp
-#define PIN_LOWBRAKE_IN       8   // D8 Input: Physical Pedal Switch (INPUT_PULLUP)
-#define PIN_LOWBRAKE_OUT      3   // D3 Output: To PC817 Optocoupler (Galvanic Isolation)
+// --- Actuators & Outputs ---
+#define PIN_THROTTLE_OUT   25  // DAC1 output to LM358
+#define PIN_STEER_PUL      18  // LEDC channel 0
+#define PIN_STEER_DIR      19  // To DM542
+#define PIN_STEER_ENA      23  // To DM542 (LOW=disabled)
 
-// --- VCS_Safety_Switches (Dual Hand Dead-Man) ---
-#define PIN_DMS_LEFT          2   // D2 Input: Left Hand Grip (Active Low / INPUT_PULLUP)
-#define PIN_DMS_RIGHT         4   // D4 Input: Right Hand Grip (Active Low / INPUT_PULLUP)
+// --- TB6612 Brake Actuator & Relays ---
+#define TB6612_IN1_PIN      4 
+#define TB6612_IN2_PIN      2 
+#define TB6612_PWM_PIN      5 
+#define BRAKE_MC_PIN       12  // Active LOW to Motor Controller
+#define PIN_RELAY_STROBE   15  // 2N2222 Transistor
+#define PIN_REVERSE_OUT    255 // DEPRECATED: Handled by hardware passthrough
 
-// --- VCS_Transmission (Software Limits & Reverse) ---
-#define PIN_SPEED_SW_LOW      A3  // Input: Physical ON-OFF-ON Switch (Low Pos)
-#define PIN_SPEED_SW_HIGH     A7  // Input: Physical ON-OFF-ON Switch (High Pos)
-// Note: D11 (Old Speed High) is currently left disconnected/spare.
-#define PIN_REVERSE_IN        A2  // Input: Driver's Reverse Switch (INPUT_PULLUP)
-// WARNING: D13 is the on-board LED on the Nano 33 BLE. Using it as a driven output means:
-//   (a) the LED visibly mirrors reverse state, and
-//   (b) the bootloader briefly toggles D13 at power-up, which can transiently
-//       assert "reverse" on the shifter before the sketch starts.
-// The optocoupler + shifter MUST debounce/ignore sub-100ms pulses, OR this pin should
-// be moved to D11 (currently spare per the old Speed-High note above). PCB rework required.
-#define PIN_REVERSE_OUT       13  // D13 Output: To Shifter -> Controller Yellow Wire
-
-// --- VCS_Steering ---
-#define PIN_STEER_PUL         5   // D5 Output: To Shifter -> Stepper PUL+
-#define PIN_STEER_DIR         6   // D6 Output: To Shifter -> Stepper DIR+
-#define PIN_STEER_ENA         7   // D7 Output: To Shifter -> Stepper ENA+ (Active Low)
-#define PIN_STEER_POT         A0  // Input: 10-turn Steering Potentiometer
-
-// --- VCS_Sensors ---
-#define PIN_HALL_SPEED        10  // D10 Input: From Shifter <- Controller Yellow Wire
+// --- Communications ---
+#define JETSON_RX_PIN      16 
+#define JETSON_TX_PIN      17 
+#define I2C_SDA_PIN        21 
+#define I2C_SCL_PIN        22 
 
 #endif // VCS_PINS_H
