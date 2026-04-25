@@ -6,10 +6,9 @@
 // ==========================================
 // System Architecture & Simulation
 // ==========================================
-#define SIMULATION_MODE 0   // 1 = Digital Twin Mode, 0 = 1500W BLDC Control Mode
-#define V_LOGIC         3.3f   // Strict 3.3V Logic Level for Nano 33 BLE
+#define SIMULATION_MODE 0      // 1 = Digital Twin Mode, 0 = LIVE 1500W BLDC Control
+#define V_LOGIC         3.3f   // ESP32 logic level (used by ADC scaling helpers)
 
-// Compile-time announcement so the wrong-mode build is obvious in the IDE log
 #if SIMULATION_MODE
   #pragma message ("VCS BUILD >>> SIMULATION_MODE = 1  (Digital Twin, no live motor output)")
 #else
@@ -17,68 +16,92 @@
 #endif
 
 // ==========================================
-// System Frequencies & Timing (Deterministic)
+// System Frequencies & Timing
 // ==========================================
-#define FREQ_CONTROL_HZ     1000  // Core loop frequency (1ms)
-#define FREQ_STEER_CTRL_HZ  100   // Steering divider (10ms)
-#define FREQ_COMM_HZ        100   // UART/State Machine frequency (10ms)
-#define FREQ_UI_HZ          20    // OLED Telemetry frequency (50ms)
-#define DEBOUNCE_TIME_MS    50    // Debounce delay for physical brake (50ms)
+#define FREQ_CONTROL_HZ     1000  // Core control loop (1 ms)
+#define FREQ_STEER_CTRL_HZ  100   // Steering inner loop (10 ms)
+#define FREQ_COMM_HZ        100   // Comms / inputs sweep (10 ms)
+#define FREQ_UI_HZ          20    // OLED + telemetry (50 ms)
+#define DEBOUNCE_TIME_MS    50    // Debounce window for physical brake
 
 // ==========================================
-// Motor & Powertrain (1500W E-Bike Setup)
+// Motor & Powertrain
 // ==========================================
-// IMPORTANT: Pole-pair count MUST match the actual motor, or measured RPM will
-// be proportionally wrong and the Speed PI loop will mis-track by the same ratio.
-// The value below is specific to the Gogo Zion 1000W/1500W hub motor used on this vehicle.
-// Generic 1500W hub motors often have 23-30 pole pairs - do NOT copy this value blindly.
-// Verification: spin wheel one full revolution by hand, count Hall transitions, divide by 6.
-#define MOTOR_POLE_PAIRS      16    // Gogo Zion 1000W/1500W (verified on bench)
+// IMPORTANT: pole-pair count MUST match the actual motor on the car.
+// Verify by spinning the wheel one mechanical revolution by hand,
+// counting Hall transitions, and dividing by 6.
+//
+// VCS_TECHNICAL_SPECIFICATION lists POLE_PAIRS = 23 with
+// HALL_TRANSITIONS_PER_MECH_REV = 138 (= 6 × 23). The value below
+// (16) is from an earlier bench measurement. RECONCILE before first
+// live run — these cannot both be right.
+#define MOTOR_POLE_PAIRS      16
 #define HALL_TRANSITIONS_REV  6     // 6 transitions per electrical cycle
-#define GEAR_REDUCTION        1.0f  // Direct drive Hub Motor
+#define GEAR_REDUCTION        1.0f
 
 // ==========================================
-// Control Loop Parameters (10-bit Standard)
+// Throttle Output (ESP32 DAC, 8-bit native)
 // ==========================================
-// Speed PI (Tuned for 1500W inertia)
-#define SPEED_KP              0.8f  
-#define SPEED_KI              0.15f 
-// WARNING: MAX_PWM_OUT=1023 assumes 10-bit PWM. The Nano 33 BLE defaults to 8-bit.
-// You MUST call analogWriteResolution(10) once in setup() or every throttle write
-// will silently clip to 255 and the motor will top out at ~25% of expected duty.
-#define MAX_PWM_OUT           1023  // 10-bit PWM (0-3.3V) - requires analogWriteResolution(10)
-#define MIN_PWM_OUT           0     // Hard Kill
+// GPIO25 -> LM358 -> motor controller.  dacWrite() takes 0–255.
+// --- Legacy Bridging Macros for Throttle PID (10-bit scale) ---
+#define MIN_PWM_OUT 0
+#define MAX_PWM_OUT 1023
+#define THROTTLE_MIN_INPUT 180
+#define THROTTLE_MAX_INPUT 850
+// ==========================================
+// Speed PI (target RPM -> DAC value)
+// ==========================================
+// Gains scaled from the legacy 0–1023 PWM values (KP=0.8, KI=0.15) by
+// 1/4 to match the 0–255 DAC output range. These are STARTING POINTS
+// only — re-tune on the bench against the real motor controller.
+#define SPEED_KP              0.20f
+#define SPEED_KI              0.0375f
 
-// Steering PID (Tuned for Stepper Driver response)
-#define STEER_KP              1.2f  
-#define STEER_KI              0.05f 
-#define STEER_KD              0.01f 
-#define STEER_DEADZONE        5     // Ignore errors < 5 units (10-bit scale)
+// ==========================================
+// Steering PID (target -> stepper effort)
+// ==========================================
+// PID setpoint and input both run in COMM units (0..1000 across full
+// steering travel), so the deadzone is in the same space.
+#define STEER_KP              1.2f
+#define STEER_KI              0.05f
+#define STEER_KD              0.01f
+#define STEER_DEADZONE        5     // COMM units (~0.5% of full travel)
+
+// ==========================================
+// Brake Actuator (TB6612 + 12V linear)
+// ==========================================
+#define BRAKE_PWM             200   // 0–255, applied to TB6612 PWMA/PWMB
+#define BRAKE_RETRACT_MS      900   // Time-limited retract (no lower limit switch).
+                                    // Calibrate physically: power the actuator at
+                                    // BRAKE_PWM and time a full retract from
+                                    // engaged to fully released.
 
 // ==========================================
 // Communication Protocol Ranges (ANS -> VCS)
 // ==========================================
-#define COMM_SPEED_MIN        0     // E-bike controllers are forward-only usually
-#define COMM_SPEED_MAX        3000  // Maximum Target RPM
-#define COMM_STEER_LEFT       0     
-#define COMM_STEER_CENTER     500   
-#define COMM_STEER_RIGHT      1000  
-#define COMM_BRAKE_MIN        0     
-#define COMM_BRAKE_MAX        1     // Binary Brake State (0=Off, 1=On)
+#define COMM_SPEED_MIN        0
+#define COMM_SPEED_MAX        3000  // Maximum target RPM
+#define COMM_STEER_LEFT       0
+#define COMM_STEER_CENTER     500
+#define COMM_STEER_RIGHT      1000
+#define COMM_BRAKE_MIN        0
+#define COMM_BRAKE_MAX        1     // Binary (0=Off, 1=On)
 
 // ==========================================
-// Physical Interface Mapping (10-bit ADC)
+// Physical Interface Mapping (ESP32 ADC -> mV)
 // ==========================================
-// Nano 33 BLE ADC is linear. Thresholds are 0-1023.
-#define THROTTLE_DEADBAND     50    // ~0.16V deadzone
-#define THROTTLE_MIN_INPUT    150   // 0.5V signal (typical e-bike pedal start)
-#define THROTTLE_MAX_INPUT    950   // 3.0V signal (typical e-bike pedal max)
+// Thresholds below are in MILLIVOLTS as returned by
+// esp_adc_cal_raw_to_voltage().  Always go through the calibrated
+// reader — never compare these against raw analogRead() values.
 
-// Note: window is slightly asymmetric (50..970). If steering mapping assumes
-// symmetry around a center, left and right end-stops will land at different
-// logical values. The steering module should either map MIN->LEFT, MAX->RIGHT
-// explicitly, or use a calibrated center offset.
-#define STEER_POT_MIN         50    // Physical hardware limit (Left)
-#define STEER_POT_MAX         970   // Physical hardware limit (Right)
+// --- Throttle pedal (via 10k/18k divider, ~0–3210 mV at full press) ---
+#define THROTTLE_DEADBAND_MV   50
+#define THROTTLE_MIN_INPUT_MV  150
+#define THROTTLE_MAX_INPUT_MV  3000
+
+// --- Steering pot (3590S, 3.3V powered) ---
+#define STEER_POT_MIN_MV       200
+#define STEER_POT_CENTER_MV    1650
+#define STEER_POT_MAX_MV       3100
 
 #endif // VCS_CONSTANTS_H

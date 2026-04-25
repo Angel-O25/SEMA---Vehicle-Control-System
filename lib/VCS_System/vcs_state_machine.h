@@ -4,64 +4,61 @@
 #include <Arduino.h>
 
 /* ==============================================================================
- * MODULE:        VCS_StateMachine
+ * MODULE:         VCS_StateMachine
  * RESPONSIBILITY: Core vehicle safety and state transition logic.
- * *REVISED FOR SEM AUTONOMOUS RULES (V1.5)*
+ *                 Revised for Shell Eco-marathon 2026 autonomous rules.
  * ============================================================================== */
 
-// SIDLAK Safety Hierarchy Enums
+// Sidlak Safety Hierarchy
 enum VcsState {
     INIT_STATE,        // Power-on self-test & sensor stabilization
-    IDLE_STATE,        // Standby; waiting for ANS System heartbeat
-    MANUAL_STATE,      // Human-in-the-loop control (Default Drive State)
-    AUTONOMOUS_STATE,  // ANS System-controlled driving (Requires BOTH Dead-Man Switches held)
-    FAULT_STATE,       // Software/Comms fail-safe triggered (e.g., ANS System disconnected)
-    ESTOP_STATE        // Critical hardware lockout (Hard reset required)
+    IDLE_STATE,        // Standby; waiting for ANS heartbeat
+    MANUAL_STATE,      // Human-in-the-loop control (default drive state)
+    AUTONOMOUS_STATE,  // ANS-controlled driving (requires both DMS held)
+    FAULT_STATE,       // Software / comms fail-safe (recoverable)
+    STOPPING_STATE     // Transient 3 s pause on stop-line / brake assertion
+                       // NOTE: a separate latched ESTOP_STATE is not modelled.
+                       //       Treat FAULT as the highest unrecoverable state for now.
 };
 
 // --- Fault Bit Definitions ---
 // Recoverable faults map to FAULT_STATE and clear when the underlying
-// condition resolves. ESTOP-class faults are latched and require reboot.
+// condition resolves.
 #define VCS_FAULT_NONE               0x00000000u
-
-// Recoverable faults (low 16 bits):
 #define VCS_FAULT_UART_CRC           0x00000001u   // CRC mismatch on command packet
-#define VCS_FAULT_HEARTBEAT_LOST     0x00000002u   // ANS System heartbeat timeout
+#define VCS_FAULT_HEARTBEAT_LOST     0x00000002u   // ANS heartbeat timeout
 #define VCS_FAULT_SENSOR_SPIKE       0x00000004u   // Hall / steering pot out-of-range
 #define VCS_FAULT_OVERCURRENT        0x00000008u   // Motor controller fault line
 
-// ESTOP-class faults (high 16 bits, latched until power-cycle):
-#define VCS_FAULT_ESTOP_MASK         0xFFFF0000u
-#define VCS_FAULT_SOFTWARE_ESTOP     0x00010000u   // ANS System sent fatal kill command
-
 // --- Safety Timing Constants ---
-// (Candidate to relocate into vcs_constants.h if that's the convention.)
+// (Candidate to relocate into vcs_constants.h.)
 #define DMS_HOLD_REQUIRED_MS         1000u         // SEM spec: 1.0 s dual-grip hold
 
-// Global State Variable
-// NOTE: currentState is read from ControlTask (1 kHz) and written from
-// CommTask (100 Hz). On nRF52840, word-aligned enum reads/writes are
-// single-instruction atomic in practice, but consider wrapping in
-// std::atomic<VcsState> for a future hardening pass.
+// Global state.
+//
+// NOTE on concurrency: currentState is currently written by task_control
+// (the FSM owner) and read by other tasks. Word-aligned enum reads on
+// ESP32 (Xtensa LX6) are single-instruction atomic in practice, so a
+// plain extern is acceptable for now. Wrap in std::atomic<VcsState>
+// during a future hardening pass if you start writing it from more
+// than one task.
 extern VcsState currentState;
 
-// --- Initialization and Main Logic ---
+// --- Initialization & main tick ---
 void initState_Machine();
 void updateStateMachine(uint32_t externalFaults);
 
-// --- Fault Injection ---
-// Latch a software E-Stop (called by UART module when ANS System sends a
-// fatal kill command, or by any other module that detects a non-recoverable
-// hazard). Only clearable by power-cycle.
+// --- Fault injection ---
+// Latch a software E-stop. Currently routes through FAULT_STATE; will
+// route to a dedicated latched state once one is added.
 void requestSoftwareEstop();
+uint32_t getSystemFaults();
 
-// --- Telemetry & Display Helpers ---
-// Returns the millis() timestamp at which the current DMS hold began,
-// or 0 if no hold is in progress.
-uint32_t getDMSHoldStartTime();
+// --- Telemetry / display helpers ---
+uint32_t    getDMSHoldStartTime();
 const char* getStateName(VcsState state);
 
-// --- Logic Helpers for Actuators/UART ---
+// --- Logic helpers ---
 bool isAutonomousMode();
 bool isDrivingState();
 

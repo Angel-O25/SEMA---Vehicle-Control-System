@@ -13,223 +13,147 @@
 #include "vcs_reverse.h"
 #include "vcs_display.h"
 #include "vcs_simulation.h"
+#include "vcs_web.h"
 
 // ============================================================
-//  BOARD-SPECIFIC SCHEDULING & INCLUDES
+//  TASK HANDLES & FORWARD DECLARATIONS
 // ============================================================
-#if defined(NANO_33_BLE)
-    #include <mbed.h>
-    using namespace rtos; 
-    using namespace std::chrono_literals; 
+TaskHandle_t ControlTaskHandle = NULL;
 
-    rtos::Thread control_thread(osPriorityRealtime);
-    rtos::Thread comm_thread(osPriorityHigh);
-    rtos::Thread ui_thread(osPriorityNormal);
-
-#elif defined(NANO_ATMEGA328)
-    #include <avr/wdt.h>
-    static uint32_t lastControlTime = 0;
-    static uint32_t lastCommTime    = 0;
-    static uint32_t lastUITime      = 0;
-
-#elif defined(ESP32_VCS)
-    TaskHandle_t ControlTaskHandle;
-#endif
+// Defined in the AP web-server module
+extern void WebServerTask(void *pvParameters);
 
 // ============================================================
-//  TASK LOGIC
+//  TASK BODIES
 // ============================================================
 
-void ControlTask() {
-    updateHallCalculations();
-    updateThrottle(getMeasuredRPM(), getTargetRPM());
-
-    static uint8_t steerDivider = 0;
-    if (++steerDivider >= 10) {
-        updateSteeringPID(getTargetSteering(), isAutonomousMode());
-        steerDivider = 0;
+// High-priority control loop: FSM tick + UART RX. 100Hz on Core 1.
+void ControlTask(void *pvParameters) {
+    for (;;) {
+        handleIncomingUART();
+        updateStateMachine(getSystemFaults());
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
-
-    #if defined(NANO_33_BLE)
-        mbed::Watchdog::get_instance().kick();
-    #elif defined(NANO_ATMEGA328)
-        wdt_reset();
-    #endif
 }
 
-// Update this function above your setup()
+// Inputs / TX / relays. Runs from ESP32_CommLoop on Core 0.
 void CommTask() {
     updateDeadman();
     updateLowBrake();
     updateThreeSpeed();
     updateReverse();
-    updateUART(); 
-    
+    updateUART();
+
     Serial.println(F(" -> Updating State Machine..."));
     updateStateMachine(0);
-    
+
     Serial.println(F(" -> Updating Relays..."));
     updateRelays(isAutonomousMode());
-    
+
     Serial.println(F(" -> CommTask Finished!"));
 }
 
+// Telemetry broadcast. Runs from ESP32_UILoop on Core 0.
 void UITask() {
     Serial.println(F("   -> Running Telemetry..."));
-    
-    // Test 1: Let's see if the telemetry string builder is crashing the RAM
-    broadcastVehicleTelemetry(); 
-
-    Serial.println(F("   -> Running Display Update..."));
-    
-    // Test 2: Let's see if pushing pixels to the OLED is crashing the I2C bus or RAM
-    //updateDisplay(getMeasuredRPM(), getMeasuredSteering(), current_drive_mode);
-
+    broadcastVehicleTelemetry();
     Serial.println(F("   -> UITask Finished!"));
 }
 
 // ============================================================
-//  THREAD WRAPPERS
+//  TASK WRAPPERS
 // ============================================================
-#if defined(NANO_33_BLE)
-void ControlTaskThread() { while(1) { ControlTask(); rtos::ThisThread::sleep_for(1ms); } }
-void CommTaskThread()    { while(1) { CommTask();    rtos::ThisThread::sleep_for(10ms); } }
-void UITaskThread()      { while(1) { UITask();      rtos::ThisThread::sleep_for(50ms); } }
+void ESP32_CommLoop(void *pvParameters) {
+    for (;;) {
+        CommTask();
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
 
-#elif defined(ESP32_VCS)
-void ESP32_ControlLoop(void * pvParameters) {
-    for(;;) { ControlTask(); vTaskDelay(1 / portTICK_PERIOD_MS); }
+void ESP32_UILoop(void *pvParameters) {
+    for (;;) {
+        UITask();
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+    }
 }
-void ESP32_CommLoop(void * pvParameters) {
-    for(;;) { CommTask(); vTaskDelay(10 / portTICK_PERIOD_MS); }
+
+void DisplayLoop(void *pvParameters) {
+    for (;;) {
+        updateDisplay(getMeasuredRPM(), getMeasuredSteering(), current_drive_mode);
+        vTaskDelay(50 / portTICK_PERIOD_MS);  // 20Hz UI refresh
+    }
 }
-void ESP32_UILoop(void * pvParameters) {
-    for(;;) { UITask(); vTaskDelay(50 / portTICK_PERIOD_MS); }
-}
-#endif
 
 // ============================================================
 //  SETUP
 // ============================================================
 void setup() {
-    #if defined(ESP32_VCS)
-        dacWrite(25, 0); // CRITICAL SECURITY: ABSOLUTE FIRST INSTRUCTION
-    #endif
+    // CRITICAL: DAC output state is undefined at power-on. Drive throttle
+    // to 0 BEFORE anything else so the motor controller never sees a
+    // spurious commanded throttle during boot.
 
-    #if defined(ESP32_VCS)
-        // Display Task pinned to Core 1 at Lowest Priority
-        xTaskCreatePinnedToCore(
-            [](void *pvParameters) {
-                initDisplay();
-                for(;;) {
-                    updateDisplay(getMeasuredRPM(), getMeasuredSteering(), current_drive_mode);
-                    vTaskDelay(50 / portTICK_PERIOD_MS); // 20Hz UI refresh
-                }
-            }, 
-            "Display", 4096, NULL, 1, NULL, 1);
-    #endif
+    dacWrite(PIN_THROTTLE_OUT, 0);
 
-    Serial.begin(115200); 
-    Serial2.begin(115200, SERIAL_8N1, 16, 17);
+    Serial.begin(115200);
+    Serial2.begin(115200, SERIAL_8N1, JETSON_RX_PIN, JETSON_TX_PIN);
 
-    #if defined(NANO_33_BLE)
-        Serial.println(F("--- VCS v1.5: NANO 33 BLE ---"));
-    #elif defined(ESP32_VCS)
-        Serial.println(F("--- VCS v1.5: ESP32 38-PIN ---"));
-    #elif defined(NANO_ATMEGA328)
-        Serial.println(F("--- VCS v1.5: ATMEGA328 NANO ---"));
-    #endif
-
-    Serial.println(F("\n--- VCS v1.5 DIAGNOSTIC BOOT ---"));
+    Serial.println(F("\n--- VCS v1.5: ESP32 38-PIN ---"));
+    Serial.println(F("--- VCS v1.5 DIAGNOSTIC BOOT ---"));
     Serial.println(F("Testing modules one by one..."));
 
-    // Single Initialization Phase
-    Serial.print(F("1. State... ")); 
-    initState_Machine(); 
+    Serial.print(F("1. State... "));
+    initState_Machine();
     Serial.println(F("OK"));
     delay(500);
 
-    Serial.print(F("2. UART... ")); 
+    Serial.print(F("2. UART... "));
     initUART();
     Serial.println(F("OK"));
     delay(500);
 
-    Serial.print(F("3. Throttle/Brake... ")); 
-    initThrottle(); 
-    initLowBrake(); 
+    Serial.print(F("3. Throttle/Brake... "));
+    initThrottle();
+    initLowBrake();
     Serial.println(F("OK"));
     delay(500);
 
-    Serial.print(F("4. Safety... ")); 
-    initDeadman(); 
-    initRelays(); 
+    Serial.print(F("4. Safety... "));
+    initDeadman();
+    initRelays();
     Serial.println(F("OK"));
     delay(500);
 
-    Serial.print(F("5. Steering... ")); 
-    initSteering(); 
+    Serial.print(F("5. Steering... "));
+    initSteering();
     Serial.println(F("OK"));
     delay(500);
 
-    Serial.print(F("6. Sensors... ")); 
-    initHallSensors(); 
-    initThreeSpeed(); 
-    initReverse(); 
+    Serial.print(F("6. Sensors... "));
+    initHallSensors();
+    initThreeSpeed();
+    initReverse();
     Serial.println(F("OK"));
     delay(500);
 
-    Serial.print(F("7. Display... ")); 
-    initDisplay(); 
+    Serial.print(F("7. Display... "));
+    initDisplay();
     Serial.println(F("OK"));
 
     Serial.println(F("--- SURVIVED BOOT SEQUENCE ---"));
 
-    #if defined(NANO_33_BLE)
-            mbed::Watchdog::get_instance().start(2000);
-            control_thread.start(ControlTaskThread);
-            comm_thread.start(CommTaskThread);
-            ui_thread.start(UITaskThread);
-        #elif defined(ESP32_VCS)
-            // Task pinning to match technical specifications
-            xTaskCreatePinnedToCore(ESP32_ControlLoop, "Control", 4096, NULL, 5, &ControlTaskHandle, 1); // Core 1 (Motor Control)
-            
-            // Register the missing Comms and UI Tasks!
-            xTaskCreatePinnedToCore(ESP32_CommLoop, "Comms", 4096, NULL, 4, NULL, 0); // Core 0 (Network/Comms)
-            xTaskCreatePinnedToCore(ESP32_UILoop, "UI", 4096, NULL, 2, NULL, 0);      // Core 0 (Telemetry)
-            
-            // Spin up the AP Web Server safely on Core 1 alongside control
-            extern void WebServerTask(void *pvParameters);
-            xTaskCreatePinnedToCore(WebServerTask, "WebServer", 4096, NULL, 1, NULL, 1);
-        #endif
+    // Spin up FreeRTOS tasks AFTER all modules are initialized.
+    // Pinning per VCS Technical Spec §9:
+    //   Core 1: control (FSM/UART/throttle), display
+    //   Core 0: comms (inputs/TX), telemetry, web server
+    xTaskCreatePinnedToCore(ControlTask,    "Control",   4096, NULL, 5, &ControlTaskHandle, 1);
+    xTaskCreatePinnedToCore(ESP32_CommLoop, "Comms",     4096, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(ESP32_UILoop,   "UI",        4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(DisplayLoop,    "Display",   4096, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(WebServerTask,  "WebServer", 4096, NULL, 1, NULL, 1);
 }
-// ============================================================
-//  LOOP
-// ============================================================
 
-// Update your loop() at the bottom
+// ============================================================
+//  LOOP — unused; all work happens in FreeRTOS tasks
+// ============================================================
 void loop() {
-    #if defined(NANO_ATMEGA328)
-        uint32_t now = millis();
-
-        // Slowed down from 1ms to 1000ms (1 second) for debugging
-        if (now - lastControlTime >= 1000) { 
-            lastControlTime = now;
-            Serial.println(F("[LOOP] Running ControlTask..."));
-            ControlTask();
-        }
-
-        // Slowed down from 10ms to 1000ms
-        if (now - lastCommTime >= 1000) { 
-            lastCommTime = now;
-            Serial.println(F("[LOOP] Running CommTask..."));
-            CommTask();
-        }
-
-        // Slowed down from 50ms to 1000ms
-        if (now - lastUITime >= 1000) { 
-            lastUITime = now;
-            Serial.println(F("[LOOP] Running UITask..."));
-            UITask();
-        }
-    #endif
 }

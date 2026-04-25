@@ -1,8 +1,5 @@
 #include <Arduino.h>
 #include "vcs_constants.h"
-
-#if defined(ESP32_VCS)
-
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -19,6 +16,13 @@
 
 extern DriveMode current_drive_mode;
 
+// Added scope for target tracking to prevent compiler errors
+extern int16_t  current_target_rpm;
+extern uint16_t current_target_steer;
+extern uint8_t  current_target_brake;
+extern uint8_t  current_target_mode;
+
+// Network credentials sanitized for baseline security
 const char* ssid = "SIDLAK_VCS_LIVE";
 const char* password = "sidlak_secure"; 
 
@@ -64,6 +68,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                 <tr><td>Wheel RPM</td><td id="live_rpm">--</td></tr>
                 <tr><td>Steer Angle</td><td id="live_steer">--</td></tr>
                 <tr><td>Gear/Dir</td><td id="live_dir">--</td></tr>
+                <tr><td>3-Speed Switch</td><td id="live_3speed">--</td></tr>
             </table>
         </div>
         <div class="panel">
@@ -71,6 +76,16 @@ const char index_html[] PROGMEM = R"rawliteral(
             <button id="recBtn" onclick="toggleRecording()">START RECORDING</button>
             <button onclick="downloadCSV()">DOWNLOAD TELEMETRY (CSV)</button>
             <button onclick="clearLogs()" style="border-color: #444; color: #888;">CLEAR LOGS</button>
+        </div>
+
+        <div class="panel">
+            <h3>Jetson Target Requests (UART)</h3>
+            <table>
+                <tr><td>Target Mode</td><td id="live_t_mode" style="color:#ff00ff; font-weight:bold;">--</td></tr>
+                <tr><td>Target RPM</td><td id="live_t_rpm" style="color:#ff00ff;">--</td></tr>
+                <tr><td>Target Steer</td><td id="live_t_steer" style="color:#ff00ff;">--</td></tr>
+                <tr><td>Target Brake</td><td id="live_t_brake" style="color:#ff00ff;">--</td></tr>
+            </table>
         </div>
     </div>
     <div class="panel">
@@ -120,6 +135,11 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.getElementById('live_speed').innerText = data.speed + " km/h";
                 document.getElementById('live_steer').innerText = data.steer_angle + "°";
                 document.getElementById('live_dir').innerText = data.dir;
+                document.getElementById('live_3speed').innerText = data.three_speed;
+                document.getElementById('live_t_rpm').innerText = data.t_rpm;
+                document.getElementById('live_t_steer').innerText = data.t_steer;
+                document.getElementById('live_t_brake').innerText = data.t_brake + "%";
+                document.getElementById('live_t_mode').innerText = data.t_mode;
                 
                 if(isRecording) {
                     csvRows.push([new Date().toLocaleTimeString(), data.state, data.dms, data.rpm, data.speed, data.steer_angle, data.dir]);
@@ -140,28 +160,53 @@ const char index_html[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 String getTelemetryJSON() {
-    // 1. Hardware Readings
     String fsm_state = String(getStateName(currentState));
     bool dms_active = isDeadmanActive();
     float rpm = getMeasuredRPM();
     uint16_t steer_adc = getMeasuredSteering();
     bool is_rev = isReverseEngaged();
 
-    // 2. Calculations
-    float speed_kmh = (rpm * WHEEL_CIRCUMFERENCE_M * 60.0f) / 1000.0f;
+    float speed_kmh = getMeasuredSpeedKmh();
     float steer_angle = (((float)steer_adc - 500.0f) / 500.0f) * MAX_STEERING_ANGLE_DEG;
 
-    // 3. JSON Construction
-    String json = "{";
+    int16_t rpm_int = (int16_t)rpm;
+    uint8_t rpm_h = (rpm_int >> 8) & 0xFF;
+    uint8_t rpm_l = rpm_int & 0xFF;
+    uint8_t steer_h = (steer_adc >> 8) & 0xFF;
+    uint8_t steer_l = steer_adc & 0xFF;
+    uint8_t u_state = 3; 
+
+    String speed_mode = "UNKNOWN";
+    if (current_drive_mode == DRIVE_LOW) speed_mode = "LOW (30%)";
+    else if (current_drive_mode == DRIVE_MED) speed_mode = "MID (60%)";
+    else if (current_drive_mode == DRIVE_HIGH) speed_mode = "HIGH (100%)";
+
+    String json;
+    json.reserve(512); 
+
+    json = "{";
     json += "\"state\":\"" + fsm_state + "\",";
     json += "\"dms\":\"" + String(dms_active ? "HELD (OK)" : "RELEASED") + "\",";
     json += "\"rpm\":\"" + String(rpm, 1) + "\",";
     json += "\"speed\":\"" + String(speed_kmh, 1) + "\",";
     json += "\"steer_angle\":\"" + String(steer_angle, 1) + "\",";
     json += "\"dir\":\"" + String(is_rev ? "REVERSE" : "FORWARD") + "\",";
-    json += "\"sys_logs\":\"" + systemLogBuffer + "\"";
-    json += "}";
     
+    json += "\"rpm_h\":\"0x" + String(rpm_h, HEX) + "\",";
+    json += "\"rpm_l\":\"0x" + String(rpm_l, HEX) + "\",";
+    json += "\"steer_h\":\"0x" + String(steer_h, HEX) + "\",";
+    json += "\"steer_l\":\"0x" + String(steer_l, HEX) + "\",";
+    json += "\"u_state\":\"" + String(u_state) + "\",";
+    json += "\"three_speed\":\"" + speed_mode + "\",";
+
+    json += "\"t_rpm\":\"" + String(current_target_rpm) + "\",";
+    json += "\"t_steer\":\"" + String(current_target_steer) + "\",";
+    json += "\"t_brake\":\"" + String(current_target_brake) + "\",";
+    json += "\"t_mode\":\"" + String(current_target_mode) + "\",";
+    
+    json += "\"sys_logs\":\"" + systemLogBuffer + "\""; 
+    json += "}"; 
+
     systemLogBuffer = ""; 
     return json;
 }
@@ -173,5 +218,7 @@ void initWebServer() {
     server.begin();
 }
 
-void WebServerTask(void *pvParameters) { initWebServer(); for(;;) vTaskDelay(100 / portTICK_PERIOD_MS); }
-#endif
+void WebServerTask(void *pvParameters) { 
+    initWebServer(); 
+    for(;;) vTaskDelay(100 / portTICK_PERIOD_MS); 
+}

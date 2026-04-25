@@ -1,71 +1,48 @@
 #include "vcs_deadman.h"
 #include "vcs_pins.h"
-#include "vcs_web.h" // [CRITICAL ADDITION] Grants access to global simulation flags
 
-// Internal State Variables
-static bool leftGripPressed = false;
-static bool rightGripPressed = false;
+// =========================================================
+// Two grip switches feed an AND gate. Both must be held
+// for DEBOUNCE_TICKS consecutive samples before the FSM
+// will let us promote into AUTONOMOUS_STATE.
+// =========================================================
+
+// Internal state
+static bool leftGripPressed   = false;
+static bool rightGripPressed  = false;
 static bool autoStateRequested = false;
 
-// Debounce Configuration (Assumes updateDeadman() is called at 100Hz / 10ms)
-// 3 ticks * 10ms = 30ms required to change state
-const uint8_t DEBOUNCE_TICKS = 3; 
+// Debounce: 3 ticks × 10 ms = 30 ms required to flip state
+static const uint8_t DEBOUNCE_TICKS = 3;
 
 void initDeadman() {
-    #if defined(ESP32_VCS)
-        // ESP32 Hardware Design: Active HIGH, firmware pull-down
-        // Unpressed = LOW, Pressed = HIGH to 3.3V
-        pinMode(PIN_DMS_LEFT, INPUT_PULLDOWN);
-        pinMode(PIN_DMS_RIGHT, INPUT_PULLDOWN);
-    #else
-        pinMode(PIN_DMS_LEFT, INPUT_PULLUP);
-        pinMode(PIN_DMS_RIGHT, INPUT_PULLUP);
-    #endif
+    // Active HIGH, no PCB pull resistor — internal pull-down keeps the
+    // line at LOW when the switch is open.
+    pinMode(PIN_DMS_LEFT,  INPUT_PULLDOWN);
+    pinMode(PIN_DMS_RIGHT, INPUT_PULLDOWN);
 }
 
 void updateDeadman() {
-    #if defined(ESP32_VCS)
-        // 1. Read Raw Hardware States (HIGH means the button is pressed)
-        bool rawLeft  = (digitalRead(PIN_DMS_LEFT) == HIGH);
-        bool rawRight = (digitalRead(PIN_DMS_RIGHT) == HIGH);
-    #else
-        // 1. Read Raw Hardware States (LOW means the button is pressed)
-        bool rawLeft  = (digitalRead(PIN_DMS_LEFT) == LOW);
-        bool rawRight = (digitalRead(PIN_DMS_RIGHT) == LOW);
-    #endif
+    // HIGH = pressed (switch ties GPIO to 3.3V)
+    bool rawLeft  = (digitalRead(PIN_DMS_LEFT)  == HIGH);
+    bool rawRight = (digitalRead(PIN_DMS_RIGHT) == HIGH);
 
-    // Static counters for debouncing memory
-    static uint8_t leftCounter = 0;
+    // Saturating up/down counters per channel
+    static uint8_t leftCounter  = 0;
     static uint8_t rightCounter = 0;
 
-    // 2. Filter Left Grip
-    if (rawLeft) {
-        if (leftCounter < DEBOUNCE_TICKS) leftCounter++;
-    } else {
-        if (leftCounter > 0) leftCounter--;
-    }
-    // Lock in the clean state
-    leftGripPressed = (leftCounter >= DEBOUNCE_TICKS);
+    if (rawLeft  && leftCounter  < DEBOUNCE_TICKS) leftCounter++;
+    if (!rawLeft && leftCounter  > 0)              leftCounter--;
+    leftGripPressed  = (leftCounter  >= DEBOUNCE_TICKS);
 
-    // 3. Filter Right Grip
-    if (rawRight) {
-        if (rightCounter < DEBOUNCE_TICKS) rightCounter++;
-    } else {
-        if (rightCounter > 0) rightCounter--;
-    }
-    // Lock in the clean state
+    if (rawRight  && rightCounter < DEBOUNCE_TICKS) rightCounter++;
+    if (!rawRight && rightCounter > 0)              rightCounter--;
     rightGripPressed = (rightCounter >= DEBOUNCE_TICKS);
 
-    // 4. The Strict AND Gate Logic
-    // Both must be explicitly pressed to request Autonomous State
-    if (leftGripPressed && rightGripPressed) {
-        autoStateRequested = true;
-    } else {
-        autoStateRequested = false;
-    }
+    // Strict AND
+    autoStateRequested = (leftGripPressed && rightGripPressed);
 }
 
-bool isDeadmanActive() {    
-    // --- LIVE HARDWARE MODE ---
+bool isDeadmanActive() {
     return autoStateRequested;
 }

@@ -3,13 +3,13 @@
 
 #include <Arduino.h>
 
-// Initializes the hardware pins with internal pull-ups
+// Configures GPIO 33 + 27 as INPUT_PULLDOWN (active-HIGH switches, no PCB pull).
 void initDeadman();
 
-// Polled at 100Hz to read the hardware switches and apply debounce filtering
+// Polled at 100Hz to debounce both DMS switches.
 void updateDeadman();
 
-// Returns true ONLY if BOTH switches are actively held down
+// Returns true ONLY if BOTH grips have been actively held (debounced).
 bool isDeadmanActive();
 
 #endif // VCS_DEADMAN_H

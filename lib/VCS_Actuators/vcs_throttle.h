@@ -7,9 +7,6 @@
 #include "vcs_state_machine.h"
 #include <QuickPID.h>
 
-
-// Variables exposed for telemetry and state machine.
-// Changed current_pwm_duty to uint16_t to support 10-bit (0-1023) resolution without overflowing.
 extern uint16_t current_throttle_adc;
 extern uint16_t current_pwm_duty;
 
