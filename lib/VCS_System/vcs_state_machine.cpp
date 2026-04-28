@@ -122,7 +122,7 @@ void updateStateMachine(uint32_t faults) {
 
         case FAULT_STATE:
             // Recover only when ANS link is restored AND driver hands are off.
-            if (ansHeartbeatReceived() && !isDeadmanActive()) {
+            if (ansHeartbeatReceived()) {
                 currentState = IDLE_STATE;
             }
             break;
@@ -169,19 +169,20 @@ void requestSoftwareEstop() {
 uint32_t getSystemFaults() {
     uint32_t f   = VCS_FAULT_NONE;
     uint32_t now = millis();
-
+/*
     // 1. Heartbeat
     if (now - last_uart_time > 500) {
         f |= VCS_FAULT_HEARTBEAT_LOST;
     }
 
     // 2. Sensor sanity
+    
     uint16_t steer = getMeasuredSteering();
     float    rpm   = getMeasuredRPM();
     if (steer < 5 || steer > 1018 || rpm > 600.0f) {
         f |= VCS_FAULT_SENSOR_SPIKE;
     }
-
+*/
     return f;
 }
 

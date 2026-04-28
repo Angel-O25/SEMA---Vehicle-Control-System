@@ -40,6 +40,8 @@ static volatile uint16_t target_steering          = 500;
 static volatile uint8_t  target_brake             = 0;
 static volatile bool     target_direction_reverse = false;
 static volatile uint32_t last_valid_packet_time   = 0;
+extern String last_rx_hex;
+extern String last_tx_hex;
 
 // Legacy mirrors (see header note). Updated alongside the
 // mux-protected versions for backward source-compat.
@@ -100,6 +102,14 @@ void handleIncomingUART() {
             Serial.println(recvCRC, HEX);
             continue;
         }
+
+        // After CRC check succeeds
+        last_rx_hex = "";
+        for(int i=0; i<14; i++) {
+            if(pkt[i] < 0x10) last_rx_hex += "0";
+            last_rx_hex += String(pkt[i], HEX) + " ";
+        }
+        last_rx_hex.toUpperCase();
 
         // Print the valid 14-byte packet to your PC Serial Monitor
         printHexDebug("RX [JETSON -> ESP32]: ", pkt, 14);
@@ -219,6 +229,13 @@ uint8_t txDebug[14] = {
     Serial2.write((uint8_t)((crc >> 8) & 0xFF));
     Serial2.write((uint8_t)( crc       & 0xFF));
     Serial2.write((uint8_t)0xFF);
+
+    last_tx_hex = "";
+        for(int i=0; i<14; i++) {
+            if(txDebug[i] < 0x10) last_tx_hex += "0";
+            last_tx_hex += String(txDebug[i], HEX) + " ";
+        }
+        last_tx_hex.toUpperCase();
 #endif
 }
 

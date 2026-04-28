@@ -25,6 +25,9 @@ extern uint8_t  current_target_mode;
 // Network credentials sanitized for baseline security
 const char* ssid = "SIDLAK_VCS_LIVE";
 const char* password = "sidlak_secure"; 
+String last_rx_hex = "00 00 00 00 00 00 00 00 00 00 00 00 00 00";
+String last_tx_hex = "00 00 00 00 00 00 00 00 00 00 00 00 00 00";
+
 
 #define WHEEL_CIRCUMFERENCE_M 1.2764f 
 #define MAX_STEERING_ANGLE_DEG 35.0f  
@@ -89,9 +92,26 @@ const char index_html[] PROGMEM = R"rawliteral(
         </div>
     </div>
     <div class="panel">
+
+    <div class="panel" style="grid-column: span 2;">
+            <h3>Raw UART Stream (Hex)</h3>
+            <div style="display: flex; gap: 10px;">
+                <div style="flex: 1;">
+                    <span style="color: #00FFFF;">[JETSON -> ESP32]</span>
+                    <div id="rx_hex" style="background: #111; padding: 10px; border: 1px solid #00FFFF; margin-top: 5px;">--</div>
+                </div>
+                <div style="flex: 1;">
+                    <span style="color: #FFFF00;">[ESP32 -> JETSON]</span>
+                    <div id="tx_hex" style="background: #111; padding: 10px; border: 1px solid #FFFF00; margin-top: 5px;">--</div>
+                </div>
+            </div>
+        </div>
+
         <h3>System Activity Log</h3>
         <div id="logBox"></div>
     </div>
+
+    
 
     <script>
         let isRecording = false;
@@ -140,6 +160,8 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.getElementById('live_t_steer').innerText = data.t_steer;
                 document.getElementById('live_t_brake').innerText = data.t_brake + "%";
                 document.getElementById('live_t_mode').innerText = data.t_mode;
+                document.getElementById('rx_hex').innerText = data.rx_hex;
+                document.getElementById('tx_hex').innerText = data.tx_hex;
                 
                 if(isRecording) {
                     csvRows.push([new Date().toLocaleTimeString(), data.state, data.dms, data.rpm, data.speed, data.steer_angle, data.dir]);
@@ -184,6 +206,8 @@ String getTelemetryJSON() {
     String json;
     json.reserve(512); 
 
+
+    
     json = "{";
     json += "\"state\":\"" + fsm_state + "\",";
     json += "\"dms\":\"" + String(dms_active ? "HELD (OK)" : "RELEASED") + "\",";
@@ -203,7 +227,8 @@ String getTelemetryJSON() {
     json += "\"t_steer\":\"" + String(current_target_steer) + "\",";
     json += "\"t_brake\":\"" + String(current_target_brake) + "\",";
     json += "\"t_mode\":\"" + String(current_target_mode) + "\",";
-    
+    json += "\"rx_hex\":\"" + last_rx_hex + "\",";
+    json += "\"tx_hex\":\"" + last_tx_hex + "\",";
     json += "\"sys_logs\":\"" + systemLogBuffer + "\""; 
     json += "}"; 
 
