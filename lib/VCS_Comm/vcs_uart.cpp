@@ -52,17 +52,29 @@ uint16_t current_target_steer = 0;
 uint8_t  current_target_mode  = 0;
 uint32_t last_uart_time       = 0;
 
+// RX state machine — avoids peek/readBytes mis-alignment and false "bad footer".
+enum class UartRxState : uint8_t { WAIT_AA, WAIT_55, PAYLOAD };
+static UartRxState s_rxState = UartRxState::WAIT_AA;
+static uint8_t     s_rxPkt[14];
+static uint8_t     s_rxIdx = 0;
+
 // =========================================================
 // Forward decls
 // =========================================================
 static uint16_t calculateCRC16(const uint8_t *data, uint8_t length);
 static void     processCommandPacket(const uint8_t *packet);
+static void     feedRxByte(uint8_t b);
 
 // =========================================================
 // INIT
 // =========================================================
 void initUART() {
     Serial2.begin(115200, SERIAL_8N1, JETSON_RX_PIN, JETSON_TX_PIN);
+    while (Serial2.available() > 0) {
+        (void)Serial2.read();
+    }
+    s_rxState = UartRxState::WAIT_AA;
+    s_rxIdx   = 0;
 
     portENTER_CRITICAL(&uartMux);
     last_valid_packet_time = millis();
@@ -71,62 +83,87 @@ void initUART() {
 }
 
 // =========================================================
-// SINGLE RX PARSER
-// Fixed-length 14-byte frame.  Discards bytes until a valid
-// AA 55 header appears, then reads the rest of the frame in
-// one shot. Footer + CRC must both validate.
+// RX — one byte at a time
 // =========================================================
-void handleIncomingUART() {
-    while (Serial2.available() >= 14) {
-        if (Serial2.read() != 0xAA) continue;
-        if (Serial2.peek() != 0x55) continue;
-        Serial2.read();  // consume 0x55
-
-        uint8_t pkt[14];
-        pkt[0] = 0xAA;
-        pkt[1] = 0x55;
-        if (Serial2.readBytes(&pkt[2], 12) != 12) continue;
-
-        // Footer
-        if (pkt[13] != 0xFF) {
-            vcs_log("UART: bad footer");
-            continue;
+static void feedRxByte(uint8_t b) {
+    switch (s_rxState) {
+    case UartRxState::WAIT_AA:
+        if (b == 0xAA) {
+            s_rxPkt[0] = b;
+            s_rxState  = UartRxState::WAIT_55;
         }
+        break;
 
-        // CRC over bytes 2..10 (Type + Length + 7-byte payload = 9 bytes)
-        uint16_t recvCRC = ((uint16_t)pkt[11] << 8) | pkt[12];
-        uint16_t calcCRC = calculateCRC16(&pkt[2], 9);
-        if (recvCRC != calcCRC) {
+    case UartRxState::WAIT_55:
+        if (b == 0x55) {
+            s_rxPkt[1] = b;
+            s_rxIdx    = 2;
+            s_rxState  = UartRxState::PAYLOAD;
+        } else if (b == 0xAA) {
+            s_rxPkt[0] = b;
+        } else {
+            s_rxState = UartRxState::WAIT_AA;
+        }
+        break;
+
+    case UartRxState::PAYLOAD:
+        s_rxPkt[s_rxIdx++] = b;
+        if (s_rxIdx < 14) {
+            break;
+        }
+        s_rxState = UartRxState::WAIT_AA;
+        s_rxIdx   = 0;
+
+        if (s_rxPkt[13] != 0xFF) {
             if (UART_DEBUG_LOGS) {
-                Serial.print(F("UART CRC mismatch: calc="));
-                Serial.print(calcCRC, HEX);
-                Serial.print(F(" recv="));
-                Serial.println(recvCRC, HEX);
+                vcs_log("UART: bad footer (resync)");
             }
-            continue;
+            break;
         }
 
-        // After CRC check succeeds
+        // Jetson command only: ignore 0x02 telemetry on this RX line (echo/noise).
+        if (s_rxPkt[2] != 0x01 || s_rxPkt[3] != 0x07) {
+            break;
+        }
+
+        {
+            uint16_t recvCRC = ((uint16_t)s_rxPkt[11] << 8) | s_rxPkt[12];
+            uint16_t calcCRC = calculateCRC16(&s_rxPkt[2], 9);
+            if (recvCRC != calcCRC) {
+                if (UART_DEBUG_LOGS) {
+                    Serial.print(F("UART CRC mismatch: calc="));
+                    Serial.print(calcCRC, HEX);
+                    Serial.print(F(" recv="));
+                    Serial.println(recvCRC, HEX);
+                }
+                break;
+            }
+        }
+
         last_rx_hex = "";
-        for(int i=0; i<14; i++) {
-            if(pkt[i] < 0x10) last_rx_hex += "0";
-            last_rx_hex += String(pkt[i], HEX) + " ";
+        for (int i = 0; i < 14; i++) {
+            if (s_rxPkt[i] < 0x10) last_rx_hex += "0";
+            last_rx_hex += String(s_rxPkt[i], HEX) + " ";
         }
         last_rx_hex.toUpperCase();
 
-        // Print the valid 14-byte packet to your PC Serial Monitor
         if (UART_DEBUG_LOGS) {
-            printHexDebug("RX [JETSON -> ESP32]: ", pkt, 14);
+            printHexDebug("RX [JETSON -> ESP32]: ", s_rxPkt, 14);
         }
-        // -------
-        
-        // Frame is valid — record timestamp and dispatch
+
         last_uart_time = millis();
         portENTER_CRITICAL(&uartMux);
         last_valid_packet_time = last_uart_time;
         portEXIT_CRITICAL(&uartMux);
 
-        processCommandPacket(pkt);
+        processCommandPacket(s_rxPkt);
+        break;
+    }
+}
+
+void handleIncomingUART() {
+    while (Serial2.available() > 0) {
+        feedRxByte(static_cast<uint8_t>(Serial2.read()));
     }
 }
 
