@@ -6,6 +6,7 @@
 #include "vcs_pins.h"
 #include "vcs_reverse.h"
 #include "vcs_web.h"
+static constexpr bool UART_DEBUG_LOGS = false;
 
 // =========================================================
 // Sidlak-2 Frame (fixed 14 bytes, both directions)
@@ -96,10 +97,12 @@ void handleIncomingUART() {
         uint16_t recvCRC = ((uint16_t)pkt[11] << 8) | pkt[12];
         uint16_t calcCRC = calculateCRC16(&pkt[2], 9);
         if (recvCRC != calcCRC) {
-            Serial.print(F("UART CRC mismatch: calc="));
-            Serial.print(calcCRC, HEX);
-            Serial.print(F(" recv="));
-            Serial.println(recvCRC, HEX);
+            if (UART_DEBUG_LOGS) {
+                Serial.print(F("UART CRC mismatch: calc="));
+                Serial.print(calcCRC, HEX);
+                Serial.print(F(" recv="));
+                Serial.println(recvCRC, HEX);
+            }
             continue;
         }
 
@@ -112,7 +115,9 @@ void handleIncomingUART() {
         last_rx_hex.toUpperCase();
 
         // Print the valid 14-byte packet to your PC Serial Monitor
-        printHexDebug("RX [JETSON -> ESP32]: ", pkt, 14);
+        if (UART_DEBUG_LOGS) {
+            printHexDebug("RX [JETSON -> ESP32]: ", pkt, 14);
+        }
         // -------
         
         // Frame is valid — record timestamp and dispatch
@@ -212,17 +217,18 @@ void broadcastVehicleTelemetry() {
 
     uint16_t crc = calculateCRC16(buf, 9);
 
-#if SIMULATION_MODE == 0
-
-    // Debug Telemetry
-uint8_t txDebug[14] = {
+    // Debug Telemetry + frame assembly
+    uint8_t txDebug[14] = {
         0xAA, 0x55, buf[0], buf[1], buf[2], buf[3], buf[4], 
         buf[5], buf[6], buf[7], buf[8], 
         (uint8_t)((crc >> 8) & 0xFF), (uint8_t)(crc & 0xFF), 0xFF
     };
-    printHexDebug("TX [ESP32 -> JETSON]: ", txDebug, 14);
-    // ----------------------
+    if (UART_DEBUG_LOGS) {
+        printHexDebug("TX [ESP32 -> JETSON]: ", txDebug, 14);
+    }
     
+    // Always broadcast telemetry to Jetson (both live and simulation modes)
+    // so handshake health can be validated during bench tests.
     Serial2.write((uint8_t)0xAA);
     Serial2.write((uint8_t)0x55);
     Serial2.write(buf, 9);
@@ -236,7 +242,6 @@ uint8_t txDebug[14] = {
             last_tx_hex += String(txDebug[i], HEX) + " ";
         }
         last_tx_hex.toUpperCase();
-#endif
 }
 
 // =========================================================

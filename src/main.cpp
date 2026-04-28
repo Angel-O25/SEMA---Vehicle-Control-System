@@ -19,6 +19,7 @@
 //  TASK HANDLES & FORWARD DECLARATIONS
 // ============================================================
 TaskHandle_t ControlTaskHandle = NULL;
+static constexpr bool VCS_VERBOSE_TASK_LOGS = false;
 
 // Defined in the AP web-server module
 extern void WebServerTask(void *pvParameters);
@@ -44,20 +45,19 @@ void CommTask() {
     updateReverse();
     updateUART();
 
-    Serial.println(F(" -> Updating State Machine..."));
-    updateStateMachine(0);
-
-    Serial.println(F(" -> Updating Relays..."));
+    // FSM tick is owned by ControlTask only (single-writer design).
     updateRelays(isAutonomousMode());
-
-    Serial.println(F(" -> CommTask Finished!"));
+    if (VCS_VERBOSE_TASK_LOGS) {
+        Serial.println(F(" -> CommTask Finished!"));
+    }
 }
 
 // Telemetry broadcast. Runs from ESP32_UILoop on Core 0.
 void UITask() {
-    Serial.println(F("   -> Running Telemetry..."));
     broadcastVehicleTelemetry();
-    Serial.println(F("   -> UITask Finished!"));
+    if (VCS_VERBOSE_TASK_LOGS) {
+        Serial.println(F("   -> UITask Finished!"));
+    }
 }
 
 // ============================================================
@@ -95,7 +95,6 @@ void setup() {
     dacWrite(PIN_THROTTLE_OUT, 0);
 
     Serial.begin(115200);
-    Serial2.begin(115200, SERIAL_8N1, JETSON_RX_PIN, JETSON_TX_PIN);
 
     Serial.println(F("\n--- VCS v1.5: ESP32 38-PIN ---"));
     Serial.println(F("--- VCS v1.5 DIAGNOSTIC BOOT ---"));
