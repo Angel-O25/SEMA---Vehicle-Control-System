@@ -86,6 +86,8 @@
 #define COMM_STEER_RIGHT      1000
 #define COMM_BRAKE_MIN        0
 #define COMM_BRAKE_MAX        1     // Binary (0=Off, 1=On)
+// Signal staleness fault — Jetson command timeout in autonomous mode
+constexpr uint16_t FAULT_SIGNAL_TIMEOUT = 0x0004;
 
 // ==========================================
 // Physical Interface Mapping (ESP32 ADC -> mV)

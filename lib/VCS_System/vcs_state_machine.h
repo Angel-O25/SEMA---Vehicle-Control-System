@@ -47,6 +47,7 @@ extern VcsState currentState;
 // --- Initialization & main tick ---
 void initState_Machine();
 void updateStateMachine(uint32_t externalFaults);
+void triggerFault(uint16_t fault_code);
 
 // --- Fault injection ---
 // Latch a software E-stop. Currently routes through FAULT_STATE; will

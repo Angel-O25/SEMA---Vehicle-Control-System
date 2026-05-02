@@ -15,6 +15,7 @@ extern void hall_interrupts_detach();
 
 // Brake helper lives in vcs_lowbrake.cpp / vcs_relays.cpp
 extern void forceBrakeEngagement(bool engage);
+static uint32_t g_systemFaults = 0;
 
 // =========================================================
 // Global state
@@ -84,7 +85,17 @@ void updateStateMachine(uint32_t faults) {
                     }
                 }
             } else {
-                dmsStartTime = 0;
+                // TARGETED FIX: 50ms grace period to prevent switch bounce from resetting the timer
+                static uint32_t signalLostTime = 0;
+                if (dmsStartTime != 0) {
+                    if (signalLostTime == 0) signalLostTime = millis();
+                    if (millis() - signalLostTime > 50) { 
+                        dmsStartTime = 0;      // Only reset if signal is gone for >50ms
+                        signalLostTime = 0;
+                    }
+                } else {
+                    signalLostTime = 0;
+                }
             }
             break;
 
@@ -167,23 +178,12 @@ void requestSoftwareEstop() {
 }
 
 uint32_t getSystemFaults() {
-    uint32_t f   = VCS_FAULT_NONE;
-    uint32_t now = millis();
-/*
-    // 1. Heartbeat
-    if (now - last_uart_time > 500) {
-        f |= VCS_FAULT_HEARTBEAT_LOST;
-    }
+    return g_systemFaults;
+}
 
-    // 2. Sensor sanity
-    
-    uint16_t steer = getMeasuredSteering();
-    float    rpm   = getMeasuredRPM();
-    if (steer < 5 || steer > 1018 || rpm > 600.0f) {
-        f |= VCS_FAULT_SENSOR_SPIKE;
-    }
-*/
-    return f;
+
+void triggerFault(uint16_t fault_code) {
+    g_systemFaults |= fault_code;
 }
 
 // =========================================================

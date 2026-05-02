@@ -16,9 +16,11 @@ uint16_t current_pwm_duty = 0;
 float smoothedThrottle = 0.0f;
 const float emaAlphaThrottle = 0.15f; 
 
-float measured_rpm = 0.0f;
-float target_rpm = 0.0f;
-float throttle_pwm_out = 0.0f;
+// FIX 9: file-scope statics — prevent any external writes that
+// could race with QuickPID's pointer-based setpoint/input access.
+static float measured_rpm     = 0.0f;
+static float target_rpm       = 0.0f;
+static float throttle_pwm_out = 0.0f;
 
 QuickPID speedPID(&measured_rpm, &throttle_pwm_out, &target_rpm);
 
@@ -33,7 +35,12 @@ void initThrottle() {
 
     speedPID.SetTunings(SPEED_KP, SPEED_KI, 0.0f);
     speedPID.SetOutputLimits(MIN_PWM_OUT, MAX_PWM_OUT);
-    speedPID.SetSampleTimeUs(1000); 
+
+    // FIX 1: sample time MUST match actual call rate (100Hz = 10000us).
+    // Previously set to 1000us — caused QuickPID's internal dt math to
+    // be off by 10x, making tuned Kp/Ki gains behave incorrectly.
+    speedPID.SetSampleTimeUs(10000);
+
     speedPID.SetMode(QuickPID::Control::manual);
 }
 
@@ -48,7 +55,7 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
                      + ((1.0f - emaAlphaThrottle) * smoothedThrottle);
     current_throttle_adc = (uint16_t)smoothedThrottle;
 
-    // --- NEW: FETCH HARDWARE SPEED LIMIT ---
+    // --- FETCH HARDWARE SPEED LIMIT ---
     float speed_multiplier = getMaxThrottleMultiplier(); 
     int dynamic_max_pwm = MIN_PWM_OUT + (int)((MAX_PWM_OUT - MIN_PWM_OUT) * speed_multiplier);
 
@@ -59,12 +66,19 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
 
     if ((currentState != AUTONOMOUS_STATE && currentState != MANUAL_STATE) || isBrakePressed) {
         current_pwm_duty = MIN_PWM_OUT;
-        
-        // Map the 0-1023 PI output down to 0-255 for the 8-bit true DAC
+
+        // FIX 3: use the named pin constant, not magic number 25
         int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
-        dacWrite(25, constrain(dac_val, 0, 255));
-        
-        speedPID.SetMode(QuickPID::Control::manual);
+        dacWrite(PIN_THROTTLE_OUT, constrain(dac_val, 0, 255));
+
+        // FIX 2: clear PID state on transition to manual.
+        // QuickPID's SetMode(manual) does NOT clear the integral —
+        // Initialize() does. Without this, the next AUTONOMOUS entry
+        // inherits stale integral and surges the actuator.
+        if (speedPID.GetMode() != (uint8_t)QuickPID::Control::manual) {
+            speedPID.SetMode(QuickPID::Control::manual);
+            speedPID.Initialize();
+        }
         throttle_pwm_out = MIN_PWM_OUT;
         return; 
     }
@@ -72,17 +86,19 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
     // --- 2. AUTONOMOUS CONTROL (PID) ---
     if (currentState == AUTONOMOUS_STATE) {
         if (speedPID.GetMode() == (uint8_t)QuickPID::Control::manual) {
+            // Bumpless transfer: seed PID output with current pwm
+            // before flipping to automatic, so the actuator doesn't jump.
             throttle_pwm_out = (float)current_pwm_duty;
             speedPID.SetMode(QuickPID::Control::automatic);
         }
 
         measured_rpm = current_rpm_in;
-        target_rpm = target_rpm_in;
+        target_rpm   = target_rpm_in;
 
         if (consumeNewRPMSample() && speedPID.Compute()) {
             current_pwm_duty = (uint16_t)throttle_pwm_out;
             int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
-            dacWrite(25, constrain(dac_val, 0, 255));
+            dacWrite(PIN_THROTTLE_OUT, constrain(dac_val, 0, 255));   // FIX 3
         }
     } 
     // --- 3. MANUAL CONTROL (Pass-Through) ---
@@ -96,10 +112,15 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
         
         current_pwm_duty = mapped_pwm;
         int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
-        dacWrite(25, constrain(dac_val, 0, 255));
+        dacWrite(PIN_THROTTLE_OUT, constrain(dac_val, 0, 255));       // FIX 3
         
         throttle_pwm_out = mapped_pwm;
-        speedPID.SetMode(QuickPID::Control::manual);
+
+        // FIX 2: clear PID state when entering manual from autonomous
+        if (speedPID.GetMode() != (uint8_t)QuickPID::Control::manual) {
+            speedPID.SetMode(QuickPID::Control::manual);
+            speedPID.Initialize();
+        }
     }
 }
 

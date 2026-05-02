@@ -6,7 +6,7 @@
 #include "vcs_pins.h"
 #include "vcs_reverse.h"
 #include "vcs_web.h"
-static constexpr bool UART_DEBUG_LOGS = false;
+static constexpr bool UART_DEBUG_LOGS = true;
 
 // =========================================================
 // Sidlak-2 Frame (fixed 14 bytes, both directions)
@@ -52,30 +52,18 @@ uint16_t current_target_steer = 0;
 uint8_t  current_target_mode  = 0;
 uint32_t last_uart_time       = 0;
 
-// RX state machine — avoids peek/readBytes mis-alignment and false "bad footer".
-enum class UartRxState : uint8_t { WAIT_AA, WAIT_55, PAYLOAD };
-static UartRxState s_rxState = UartRxState::WAIT_AA;
-static uint8_t     s_rxPkt[14];
-static uint8_t     s_rxIdx = 0;
-
 // =========================================================
 // Forward decls
 // =========================================================
 static uint16_t calculateCRC16(const uint8_t *data, uint8_t length);
 static void     processCommandPacket(const uint8_t *packet);
-static void     feedRxByte(uint8_t b);
 
 // =========================================================
 // INIT
 // =========================================================
 void initUART() {
     Serial2.begin(115200, SERIAL_8N1, JETSON_RX_PIN, JETSON_TX_PIN);
-    while (Serial2.available() > 0) {
-        (void)Serial2.read();
-    }
-    s_rxState = UartRxState::WAIT_AA;
-    s_rxIdx   = 0;
-
+    Serial2.setTimeout(20);
     portENTER_CRITICAL(&uartMux);
     last_valid_packet_time = millis();
     portEXIT_CRITICAL(&uartMux);
@@ -83,72 +71,44 @@ void initUART() {
 }
 
 // =========================================================
-// RX — one byte at a time
+// SINGLE RX PARSER
+// Fixed-length 14-byte frame.  Discards bytes until a valid
+// AA 55 header appears, then reads the rest of the frame in
+// one shot. Footer + CRC must both validate.
 // =========================================================
-static void feedRxByte(uint8_t b) {
-    switch (s_rxState) {
-    case UartRxState::WAIT_AA:
-        if (b == 0xAA) {
-            s_rxPkt[0] = b;
-            s_rxState  = UartRxState::WAIT_55;
+void handleIncomingUART() {
+    while (Serial2.available() >= 14) {
+        // Scan for AA 55 sync — discard until found
+        if (Serial2.peek() != 0xAA) {
+            Serial2.read();   // discard and keep scanning
+            continue;
         }
-        break;
+        Serial2.read();       // consume 0xAA
 
-    case UartRxState::WAIT_55:
-        if (b == 0x55) {
-            s_rxPkt[1] = b;
-            s_rxIdx    = 2;
-            s_rxState  = UartRxState::PAYLOAD;
-        } else if (b == 0xAA) {
-            s_rxPkt[0] = b;
-        } else {
-            s_rxState = UartRxState::WAIT_AA;
+        if (Serial2.peek() != 0x55) continue;  // not our frame
+        Serial2.read();       // consume 0x55
+
+        uint8_t pkt[14];
+        pkt[0] = 0xAA;
+        pkt[1] = 0x55;
+        if (Serial2.readBytes(&pkt[2], 12) != 12) continue;
+
+        if (pkt[13] != 0xFF) {
+            vcs_log("UART: bad footer");
+            // Do NOT just continue — force resync on next AA
+            continue;
         }
-        break;
 
-    case UartRxState::PAYLOAD:
-        s_rxPkt[s_rxIdx++] = b;
-        if (s_rxIdx < 14) {
-            break;
-        }
-        s_rxState = UartRxState::WAIT_AA;
-        s_rxIdx   = 0;
-
-        if (s_rxPkt[13] != 0xFF) {
+        uint16_t recvCRC = ((uint16_t)pkt[11] << 8) | pkt[12];
+        uint16_t calcCRC = calculateCRC16(&pkt[2], 9);
+        if (recvCRC != calcCRC) {
             if (UART_DEBUG_LOGS) {
-                vcs_log("UART: bad footer (resync)");
+                Serial.print(F("UART CRC mismatch: calc="));
+                Serial.print(calcCRC, HEX);
+                Serial.print(F(" recv="));
+                Serial.println(recvCRC, HEX);
             }
-            break;
-        }
-
-        // Jetson command only: ignore 0x02 telemetry on this RX line (echo/noise).
-        if (s_rxPkt[2] != 0x01 || s_rxPkt[3] != 0x07) {
-            break;
-        }
-
-        {
-            uint16_t recvCRC = ((uint16_t)s_rxPkt[11] << 8) | s_rxPkt[12];
-            uint16_t calcCRC = calculateCRC16(&s_rxPkt[2], 9);
-            if (recvCRC != calcCRC) {
-                if (UART_DEBUG_LOGS) {
-                    Serial.print(F("UART CRC mismatch: calc="));
-                    Serial.print(calcCRC, HEX);
-                    Serial.print(F(" recv="));
-                    Serial.println(recvCRC, HEX);
-                }
-                break;
-            }
-        }
-
-        last_rx_hex = "";
-        for (int i = 0; i < 14; i++) {
-            if (s_rxPkt[i] < 0x10) last_rx_hex += "0";
-            last_rx_hex += String(s_rxPkt[i], HEX) + " ";
-        }
-        last_rx_hex.toUpperCase();
-
-        if (UART_DEBUG_LOGS) {
-            printHexDebug("RX [JETSON -> ESP32]: ", s_rxPkt, 14);
+            continue;
         }
 
         last_uart_time = millis();
@@ -156,14 +116,7 @@ static void feedRxByte(uint8_t b) {
         last_valid_packet_time = last_uart_time;
         portEXIT_CRITICAL(&uartMux);
 
-        processCommandPacket(s_rxPkt);
-        break;
-    }
-}
-
-void handleIncomingUART() {
-    while (Serial2.available() > 0) {
-        feedRxByte(static_cast<uint8_t>(Serial2.read()));
+        processCommandPacket(pkt);
     }
 }
 
@@ -186,7 +139,6 @@ static void processCommandPacket(const uint8_t *pkt) {
     current_target_rpm   = rpm;
     current_target_steer = steer;
     current_target_brake = brake;
-
     // Constrained, mux-protected handoff to control tasks
     portENTER_CRITICAL(&uartMux);
     target_mode              = mode;
@@ -335,10 +287,10 @@ bool isJetsonStopLineActive() {
 // UART UPDATE TASK (STUB)
 // =========================================================
 void updateUART() {
-    // RX is handled securely by handleIncomingUART() on Core 1.
-    // TX is handled by broadcastVehicleTelemetry() on Core 0.
-    // This stub safely satisfies the CommTask sequence without 
-    // causing a hardware UART race condition between the dual cores.
+    // Stub — RX handled by handleIncomingUART() in CommTask (Core 0).
+    // TX handled by broadcastVehicleTelemetry() in UITask (Core 0).
+    // Both on Core 0 — no cross-core Serial2 access.
+    
 }
 
 // =========================================================
