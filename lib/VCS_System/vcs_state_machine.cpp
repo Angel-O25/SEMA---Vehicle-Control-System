@@ -1,3 +1,41 @@
+// ============================================================
+//  vcs_state_machine.cpp — Rev fixes applied
+//
+//  CHANGES FROM ORIGINAL (fixes only — no new features):
+//
+//  FIX #2  — updateStateMachine() no longer takes a faults parameter.
+//             It reads g_systemFaults directly. Eliminates risk of
+//             callers passing a stale or wrong fault word.
+//             clearFault() and clearAllFaults() added — g_systemFaults
+//             was previously write-only (no way to clear a resolved fault).
+//
+//  FIX #3  — FAULT_STATE recovery now requires BOTH heartbeat restored
+//             AND g_systemFaults == VCS_FAULT_NONE. Previously recovered
+//             on heartbeat alone, so a hardware fault would clear just
+//             because the Jetson reconnected.
+//
+//  FIX #4  — s_signalLostTime and s_lastLogTime promoted from static
+//             locals inside the MANUAL_STATE case to file-scope statics.
+//             Static locals inside a switch case cannot be explicitly
+//             reset on state re-entry (e.g. AUTONOMOUS → MANUAL).
+//             File-scope statics are resettable in initState_Machine().
+//
+//  FIX #9  — Removed isJetsonStopLineActive() call. That function is
+//             defined in vcs_uart.cpp and encodes stop-line semantics
+//             inside the UART module. The check (getTargetBrake() > 0)
+//             is now inlined here where the semantic decision belongs.
+//             Remove isJetsonStopLineActive() declaration from vcs_uart.h.
+//
+//  FIX #10 — requestSoftwareEstop() now sets a latched flag. Once set,
+//             FAULT_STATE will not self-recover. Prevents the original
+//             FAULT → IDLE cycling after a commanded E-stop.
+//             Only a power-cycle clears the latch.
+//
+//  NOTE: vcs_state_machine.h must be updated to match:
+//    - updateStateMachine() signature: remove uint32_t faults parameter
+//    - Add declarations: clearFault(uint16_t), clearAllFaults()
+// ============================================================
+
 #include "vcs_state_machine.h"
 #include "vcs_uart.h"
 #include "vcs_pins.h"
@@ -6,8 +44,8 @@
 #include "vcs_throttle.h"
 #include "vcs_reverse.h"
 #include "vcs_web.h"
-#include "vcs_hallsensor.h"   // getMeasuredRPM()
-#include "vcs_steering.h"     // getMeasuredSteering()
+#include "vcs_hallsensor.h"
+#include "vcs_steering.h"
 
 // Hall ISR attach/detach lives in vcs_hallsensor.cpp
 extern void hall_interrupts_attach();
@@ -15,14 +53,32 @@ extern void hall_interrupts_detach();
 
 // Brake helper lives in vcs_lowbrake.cpp / vcs_relays.cpp
 extern void forceBrakeEngagement(bool engage);
+
 static uint32_t g_systemFaults = 0;
+
+// =========================================================
+// FIX #4: Promoted static locals from MANUAL_STATE switch
+// case to file scope. Static locals inside a switch case
+// persist correctly in C++ but cannot be explicitly reset
+// on state re-entry (e.g. AUTONOMOUS → MANUAL transitions).
+// File-scope statics with clear names are resettable in
+// initState_Machine().
+// =========================================================
+static uint32_t s_signalLostTime = 0;
+static uint32_t s_lastLogTime    = 0;
+
+// FIX #10: Latched E-stop flag. Once set by requestSoftwareEstop(),
+// FAULT_STATE will not recover until power-cycle.
+// Shell Eco-marathon rules require a commanded E-stop to be
+// non-auto-recoverable.
+static bool s_estopLatched = false;
 
 // =========================================================
 // Global state
 // =========================================================
-VcsState currentState        = INIT_STATE;
-uint32_t dmsStartTime        = 0;   // Marks beginning of DMS hold for MANUAL→AUTO promotion
-uint32_t stoppingStartTime   = 0;   // Marks entry into STOPPING_STATE
+VcsState currentState      = INIT_STATE;
+uint32_t dmsStartTime      = 0;
+uint32_t stoppingStartTime = 0;
 
 // =========================================================
 // INIT
@@ -31,20 +87,32 @@ void initState_Machine() {
     currentState      = INIT_STATE;
     dmsStartTime      = 0;
     stoppingStartTime = 0;
+    // FIX #4: Explicitly reset promoted statics on re-init.
+    s_signalLostTime  = 0;
+    s_lastLogTime     = 0;
+    // FIX #10: E-stop latch intentionally survives re-init.
+    // Only a power-cycle clears it.
 }
 
 // =========================================================
 // FSM TICK — call from EXACTLY ONE task (task_control).
+//
+// FIX #2: Signature changed — faults parameter removed.
+// g_systemFaults is read directly. Update vcs_state_machine.h
+// to match: void updateStateMachine();
 // =========================================================
-void updateStateMachine(uint32_t faults) {
+void updateStateMachine() {
     static VcsState lastState = INIT_STATE;
 
     // ---------------------------------------------------------
     // 1. PRIORITY SAFETY OVERRIDES
+    //    FIX #2: Read g_systemFaults directly instead of the
+    //    caller-supplied faults parameter that was previously
+    //    passed in (and could be stale).
     //    Heartbeat loss only forces FAULT while in AUTONOMOUS;
     //    losing the link during MANUAL is non-fatal by design.
     // ---------------------------------------------------------
-    if (faults != VCS_FAULT_NONE ||
+    if (g_systemFaults != VCS_FAULT_NONE ||
         (!ansHeartbeatReceived() && currentState == AUTONOMOUS_STATE)) {
         currentState = FAULT_STATE;
     }
@@ -64,10 +132,15 @@ void updateStateMachine(uint32_t faults) {
             currentState = MANUAL_STATE;
             break;
 
-        case MANUAL_STATE:
-            // DMS is the primary precondition for MANUAL→AUTONOMOUS.
+        case MANUAL_STATE: {
+            // FIX #4: s_signalLostTime and s_lastLogTime are now
+            // file-scope statics (see top of file), resettable on
+            // state re-entry. Behaviour is otherwise unchanged.
             if (isDeadmanActive() && !isReverseEngaged()) {
-                if (getANSCommandMode() == 1) {  // Jetson is requesting AUTO
+
+                s_signalLostTime = 0;
+
+                if (getANSCommandMode() == 1) {
                     if (dmsStartTime == 0) {
                         dmsStartTime = millis();
                         vcs_log("DMS HELD: 1s countdown for AUTO...");
@@ -78,26 +151,25 @@ void updateStateMachine(uint32_t faults) {
                         vcs_log("FSM: -> AUTONOMOUS");
                     }
                 } else {
-                    static uint32_t lastLogTime = 0;
-                    if (millis() - lastLogTime >= 2000) {
+                    if (millis() - s_lastLogTime >= 2000) {
                         vcs_log("WAITING: Jetson must send AUTO (mode=1)");
-                        lastLogTime = millis();
+                        s_lastLogTime = millis();
                     }
                 }
             } else {
-                // TARGETED FIX: 50ms grace period to prevent switch bounce from resetting the timer
-                static uint32_t signalLostTime = 0;
+                // 50ms grace period to prevent switch bounce resetting the timer
                 if (dmsStartTime != 0) {
-                    if (signalLostTime == 0) signalLostTime = millis();
-                    if (millis() - signalLostTime > 50) { 
-                        dmsStartTime = 0;      // Only reset if signal is gone for >50ms
-                        signalLostTime = 0;
+                    if (s_signalLostTime == 0) s_signalLostTime = millis();
+                    if (millis() - s_signalLostTime > 50) {
+                        dmsStartTime     = 0;
+                        s_signalLostTime = 0;
                     }
                 } else {
-                    signalLostTime = 0;
+                    s_signalLostTime = 0;
                 }
             }
             break;
+        }
 
         case AUTONOMOUS_STATE:
             // Hard physical overrides → MANUAL
@@ -105,8 +177,11 @@ void updateStateMachine(uint32_t faults) {
                 currentState = MANUAL_STATE;
                 vcs_log("SAFETY: physical override -> MANUAL");
             }
-            // Brake / stop-line → STOPPING
-            else if (isPhysicalBrakePressed() || isJetsonStopLineActive()) {
+            // FIX #9: Replaced isJetsonStopLineActive() with the inline
+            // check it contained. Stop-line semantics belong in the state
+            // machine, not in vcs_uart.cpp. Remove isJetsonStopLineActive()
+            // from vcs_uart.h and vcs_uart.cpp.
+            else if (isPhysicalBrakePressed() || (getTargetBrake() > 0)) {
                 currentState      = STOPPING_STATE;
                 stoppingStartTime = millis();
                 vcs_log("FSM: brake / stop-line -> STOPPING");
@@ -119,8 +194,9 @@ void updateStateMachine(uint32_t faults) {
             break;
 
         case STOPPING_STATE:
+            // FIX #9: Same inline check replacing isJetsonStopLineActive().
             // 3 s elapsed and stop-line cleared → resume AUTONOMOUS
-            if ((millis() - stoppingStartTime >= 3000) && !isJetsonStopLineActive()) {
+            if ((millis() - stoppingStartTime >= 3000) && !(getTargetBrake() > 0)) {
                 currentState = AUTONOMOUS_STATE;
                 vcs_log("FSM: stop cleared -> AUTONOMOUS");
             }
@@ -132,8 +208,15 @@ void updateStateMachine(uint32_t faults) {
             break;
 
         case FAULT_STATE:
-            // Recover only when ANS link is restored AND driver hands are off.
-            if (ansHeartbeatReceived()) {
+            // FIX #3: Recovery now requires ALL three conditions:
+            //   1. E-stop not latched (FIX #10)
+            //   2. Heartbeat restored
+            //   3. All fault bits cleared (was missing — previously
+            //      recovered on heartbeat alone, so a hardware fault
+            //      would clear just because the Jetson reconnected)
+            if (!s_estopLatched &&
+                ansHeartbeatReceived() &&
+                g_systemFaults == VCS_FAULT_NONE) {
                 currentState = IDLE_STATE;
             }
             break;
@@ -141,8 +224,6 @@ void updateStateMachine(uint32_t faults) {
 
     // ---------------------------------------------------------
     // 3. ENTRY ACTIONS (run once per state change)
-    //    NOTE: this block must live OUTSIDE the switch above —
-    //    if it sits after the last case it becomes unreachable.
     // ---------------------------------------------------------
     if (currentState != lastState) {
 
@@ -152,9 +233,9 @@ void updateStateMachine(uint32_t faults) {
         }
 
         // Hall ISR management:
-        //   - Attach the first time we leave INIT (motor controller is up by now).
+        //   - Attach the first time we leave INIT (MC is up by now).
         //   - Detach on FAULT (we don't trust the hardware).
-        //   - DO NOT detach on STOPPING — we still need RPM to verify zero speed.
+        //   - DO NOT detach on STOPPING — we still need RPM.
         if (currentState == IDLE_STATE && lastState == INIT_STATE) {
             hall_interrupts_attach();
         } else if (currentState == FAULT_STATE) {
@@ -168,26 +249,47 @@ void updateStateMachine(uint32_t faults) {
 }
 
 // =========================================================
-// FAULT INJECTION
+// FAULT MANAGEMENT
+// FIX #2: clearFault() and clearAllFaults() added.
+// g_systemFaults was previously write-only — once a fault
+// bit was set via triggerFault() there was no way to clear
+// it even after the condition resolved.
 // =========================================================
-void requestSoftwareEstop() {
-    // No latched ESTOP state exists yet — route through FAULT for now.
-    // FAULT is recoverable, so add a latched flag if true E-stop is needed.
-    currentState = FAULT_STATE;
-    vcs_log("ESTOP requested -> FAULT_STATE");
-}
-
 uint32_t getSystemFaults() {
     return g_systemFaults;
 }
-
 
 void triggerFault(uint16_t fault_code) {
     g_systemFaults |= fault_code;
 }
 
+// FIX #2: Clear a specific fault bit. Call after verifying
+// the fault condition is resolved.
+void clearFault(uint16_t fault_code) {
+    g_systemFaults &= ~(uint32_t)fault_code;
+}
+
+// FIX #2: Clear all fault bits. Call only after verifying
+// all fault conditions are fully resolved.
+void clearAllFaults() {
+    g_systemFaults = VCS_FAULT_NONE;
+}
+
 // =========================================================
-// HELPERS
+// ESTOP
+// FIX #10: requestSoftwareEstop() now sets a latched flag.
+// Once latched, FAULT_STATE will not recover automatically.
+// The original code routed through FAULT which is recoverable
+// — that is not a true E-stop. Power-cycle required to clear.
+// =========================================================
+void requestSoftwareEstop() {
+    s_estopLatched = true;
+    currentState   = FAULT_STATE;
+    vcs_log("ESTOP latched -> FAULT_STATE (power-cycle to clear)");
+}
+
+// =========================================================
+// HELPERS (unchanged)
 // =========================================================
 const char* getStateName(VcsState state) {
     switch (state) {

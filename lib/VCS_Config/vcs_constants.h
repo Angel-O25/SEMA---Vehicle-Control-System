@@ -3,11 +3,29 @@
 
 #include <Arduino.h>
 
-// ==========================================
-// System Architecture & Simulation
-// ==========================================
-#define SIMULATION_MODE 0      // 1 = Digital Twin Mode, 0 = LIVE 1500W BLDC Control
-#define V_LOGIC         3.3f   // ESP32 logic level (used by ADC scaling helpers)
+// ============================================================
+//  vcs_constants.h — SIDLAK 2 VCS
+//  Team Wired PH0017003 | Shell Eco-marathon 2026
+//
+//  Fixed system constants only — build flags, logic level,
+//  task frequencies, protocol ranges, fault codes, and
+//  legacy bridging macros.
+//
+//  CALIBRATABLE VALUES (PID gains, ADC endpoints, brake timing,
+//  pot measurements, hall transitions) have been moved to:
+//      vcs_calibration.h
+//
+//  This file includes vcs_calibration.h at the bottom, so all
+//  existing #include "vcs_constants.h" in the codebase continue
+//  to work without modification.
+// ============================================================
+
+
+// ============================================================
+//  SYSTEM ARCHITECTURE & BUILD FLAGS
+// ============================================================
+#define SIMULATION_MODE 0   // 1 = Digital Twin, 0 = LIVE 1500W motor control
+#define V_LOGIC         3.3f  // ESP32 logic level — used by ADC scaling helpers
 
 #if SIMULATION_MODE
   #pragma message ("VCS BUILD >>> SIMULATION_MODE = 1  (Digital Twin, no live motor output)")
@@ -15,95 +33,69 @@
   #pragma message ("VCS BUILD >>> SIMULATION_MODE = 0  (LIVE 1500W MOTOR CONTROL - verify E-stop)")
 #endif
 
-// ==========================================
-// System Frequencies & Timing
-// ==========================================
-#define FREQ_CONTROL_HZ     1000  // Core control loop (1 ms)
-#define FREQ_STEER_CTRL_HZ  100   // Steering inner loop (10 ms)
-#define FREQ_COMM_HZ        100   // Comms / inputs sweep (10 ms)
-#define FREQ_UI_HZ          20    // OLED + telemetry (50 ms)
-#define DEBOUNCE_TIME_MS    50    // Debounce window for physical brake
+// ============================================================
+//  PHYSICAL CONSTANTS
+#define WHEEL_CIRCUMFERENCE_M 1.2764f
 
-// ==========================================
-// Motor & Powertrain
-// ==========================================
-// IMPORTANT: pole-pair count MUST match the actual motor on the car.
-// Verify by spinning the wheel one mechanical revolution by hand,
-// counting Hall transitions, and dividing by 6.
-//
-// VCS_TECHNICAL_SPECIFICATION lists POLE_PAIRS = 23 with
-// HALL_TRANSITIONS_PER_MECH_REV = 138 (= 6 × 23). The value below
-// (16) is from an earlier bench measurement. RECONCILE before first
-// live run — these cannot both be right.
-#define MOTOR_POLE_PAIRS      16
-#define HALL_TRANSITIONS_REV  6     // 6 transitions per electrical cycle
-#define GEAR_REDUCTION        1.0f
 
-// ==========================================
-// Throttle Output (ESP32 DAC, 8-bit native)
-// ==========================================
-// GPIO25 -> LM358 -> motor controller.  dacWrite() takes 0–255.
-// --- Legacy Bridging Macros for Throttle PID (10-bit scale) ---
-#define MIN_PWM_OUT 0
-#define MAX_PWM_OUT 1023
-#define THROTTLE_MIN_INPUT 180
-#define THROTTLE_MAX_INPUT 850
-// ==========================================
-// Speed PI (target RPM -> DAC value)
-// ==========================================
-// Gains scaled from the legacy 0–1023 PWM values (KP=0.8, KI=0.15) by
-// 1/4 to match the 0–255 DAC output range. These are STARTING POINTS
-// only — re-tune on the bench against the real motor controller.
-#define SPEED_KP              0.20f
-#define SPEED_KI              0.0375f
+// ============================================================
+//  TASK FREQUENCIES & TIMING
+//  These are system architecture decisions, not tunable values.
+//  Changing them affects FreeRTOS task scheduling — do not
+//  adjust without reviewing all vTaskDelay() calls.
+// ============================================================
+#define FREQ_CONTROL_HZ    1000   // Core control loop    (1ms tick)
+#define FREQ_STEER_CTRL_HZ  100   // Steering inner loop  (10ms tick)
+#define FREQ_COMM_HZ        100   // Comms / inputs sweep (10ms tick)
+#define FREQ_UI_HZ           20   // OLED + telemetry     (50ms tick)
+#define DEBOUNCE_TIME_MS     50   // Physical brake switch debounce window
 
-// ==========================================
-// Steering PID (target -> stepper effort)
-// ==========================================
-// PID setpoint and input both run in COMM units (0..1000 across full
-// steering travel), so the deadzone is in the same space.
-#define STEER_KP              1.2f
-#define STEER_KI              0.05f
-#define STEER_KD              0.01f
-#define STEER_DEADZONE        5     // COMM units (~0.5% of full travel)
 
-// ==========================================
-// Brake Actuator (TB6612 + 12V linear)
-// ==========================================
-#define BRAKE_PWM             200   // 0–255, applied to TB6612 PWMA/PWMB
-#define BRAKE_RETRACT_MS      900   // Time-limited retract (no lower limit switch).
-                                    // Calibrate physically: power the actuator at
-                                    // BRAKE_PWM and time a full retract from
-                                    // engaged to fully released.
+// ============================================================
+//  COMMUNICATION PROTOCOL RANGES (Jetson → VCS)
+//  These are the agreed protocol values between ESP32 and
+//  Jetson. Do not change without updating both ends.
+// ============================================================
+#define COMM_SPEED_MIN      0
+#define COMM_SPEED_MAX      3000    // Maximum target RPM from Jetson
+#define COMM_STEER_LEFT     0
+#define COMM_STEER_CENTER   500
+#define COMM_STEER_RIGHT    1000
+#define COMM_BRAKE_MIN      0
+#define COMM_BRAKE_MAX      1       // Binary: 0 = off, 1 = on
 
-// ==========================================
-// Communication Protocol Ranges (ANS -> VCS)
-// ==========================================
-#define COMM_SPEED_MIN        0
-#define COMM_SPEED_MAX        3000  // Maximum target RPM
-#define COMM_STEER_LEFT       0
-#define COMM_STEER_CENTER     500
-#define COMM_STEER_RIGHT      1000
-#define COMM_BRAKE_MIN        0
-#define COMM_BRAKE_MAX        1     // Binary (0=Off, 1=On)
-// Signal staleness fault — Jetson command timeout in autonomous mode
+
+// ============================================================
+//  FAULT CODES
+// ============================================================
+#define VCS_FAULT_NONE        0x0000
+
+// Jetson command timeout in autonomous mode.
+// Triggered when no valid UART packet arrives within
+// SIGNAL_TIMEOUT_MS (defined in main.cpp).
 constexpr uint16_t FAULT_SIGNAL_TIMEOUT = 0x0004;
 
-// ==========================================
-// Physical Interface Mapping (ESP32 ADC -> mV)
-// ==========================================
-// Thresholds below are in MILLIVOLTS as returned by
-// esp_adc_cal_raw_to_voltage().  Always go through the calibrated
-// reader — never compare these against raw analogRead() values.
 
-// --- Throttle pedal (via 10k/18k divider, ~0–3210 mV at full press) ---
-#define THROTTLE_DEADBAND_MV   50
-#define THROTTLE_MIN_INPUT_MV  150
-#define THROTTLE_MAX_INPUT_MV  3000
+// ============================================================
+//  LEGACY BRIDGING MACROS
+//  Speed PI was originally written for a 0–1023 PWM output.
+//  These let legacy throttle PID code compile unchanged while
+//  the actual output path uses the 0–255 DAC range.
+//  Do not use in new code — reference THROTTLE_MIN/MAX_INPUT_MV
+//  from vcs_calibration.h directly.
+// ============================================================
+#define MIN_PWM_OUT       0
+#define MAX_PWM_OUT       1023
+#define THROTTLE_MIN_INPUT 650    // Legacy alias — use THROTTLE_MIN_INPUT_MV
+#define THROTTLE_MAX_INPUT 3000   // Legacy alias — use THROTTLE_MAX_INPUT_MV
 
-// --- Steering pot (3590S, 3.3V powered) ---
-#define STEER_POT_MIN_MV       200
-#define STEER_POT_CENTER_MV    1650
-#define STEER_POT_MAX_MV       3100
+
+// ============================================================
+//  CALIBRATABLE VALUES
+//  Moved to vcs_calibration.h. Included here so all existing
+//  #include "vcs_constants.h" continue to compile unchanged.
+// ============================================================
+#include "vcs_calibration.h"
+
 
 #endif // VCS_CONSTANTS_H

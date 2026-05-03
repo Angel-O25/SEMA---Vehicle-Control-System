@@ -19,7 +19,7 @@ void handleIncomingUART();
 void updateUART();
 
 // Telemetry TX. Safe to call from any single task.
-void broadcastVehicleTelemetry();
+void broadcastVehicleTelemetry(uint8_t gear);
 
 // One-time setup
 void printHexDebug(const char* prefix, const uint8_t* data, uint8_t length);
@@ -35,7 +35,6 @@ uint16_t getTargetSteering();
 uint8_t  getTargetBrake();
 bool     getANSReverseCommand();
 bool     ansHeartbeatReceived();
-bool     isJetsonStopLineActive();
 
 void printHexDebug();// =========================================================
 // Legacy unprotected globals — kept for source-compat with

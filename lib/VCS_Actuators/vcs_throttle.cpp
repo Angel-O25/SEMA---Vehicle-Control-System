@@ -4,7 +4,7 @@
 #include "vcs_constants.h"
 #include "vcs_pins.h"
 #include "vcs_hallsensor.h" 
-
+#include "vcs_calibration.h"
 #include "esp_adc_cal.h"
 #include "driver/adc.h"
 
@@ -14,7 +14,6 @@ uint16_t current_throttle_adc = 0;
 uint16_t current_pwm_duty = 0;
 
 float smoothedThrottle = 0.0f;
-const float emaAlphaThrottle = 0.15f; 
 
 // FIX 9: file-scope statics — prevent any external writes that
 // could race with QuickPID's pointer-based setpoint/input access.
@@ -51,8 +50,8 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
     uint32_t pedal_mv = esp_adc_cal_raw_to_voltage(sum / 16, &adc_chars);
     int rawThrottle = map(pedal_mv, 0, 3300, 0, 1023); 
 
-    smoothedThrottle = (emaAlphaThrottle * (float)rawThrottle)
-                     + ((1.0f - emaAlphaThrottle) * smoothedThrottle);
+    smoothedThrottle = (THROTTLE_EMA_ALPHA * (float)rawThrottle)
+                     + ((1.0f - THROTTLE_EMA_ALPHA) * smoothedThrottle);
     current_throttle_adc = (uint16_t)smoothedThrottle;
 
     // --- FETCH HARDWARE SPEED LIMIT ---

@@ -1,12 +1,13 @@
 #include "vcs_steering.h"
 #include "esp_adc_cal.h"
 #include "driver/adc.h"
+#include "vcs_calibration.h"
+#include "vcs_constants.h"
 
 extern esp_adc_cal_characteristics_t adc_chars;
 
-// EMA Smoothing for Steering Input
 float smoothedSteering = 0.0f;
-const float emaAlphaSteering = 0.15f; 
+
 
 static int s_last_freq_hz = -1;
 
@@ -64,8 +65,8 @@ uint16_t getMeasuredSteering() {
         return COMM_STEER_CENTER;
     }
 
-    smoothedSteering = (emaAlphaSteering * (float)rawSteering)
-                     + ((1.0f - emaAlphaSteering) * smoothedSteering);
+    smoothedSteering = (STEER_EMA_ALPHA * (float)rawSteering)
+                     + ((1.0f - STEER_EMA_ALPHA) * smoothedSteering);
 
     int raw_adc = (int)smoothedSteering;
     int mapped_pos = map(raw_adc, 0, 1023, COMM_STEER_LEFT, COMM_STEER_RIGHT);

@@ -46,7 +46,9 @@ extern VcsState currentState;
 
 // --- Initialization & main tick ---
 void initState_Machine();
-void updateStateMachine(uint32_t externalFaults);
+void updateStateMachine();
+void clearFault(uint16_t fault_code);
+void clearAllFaults();
 void triggerFault(uint16_t fault_code);
 
 // --- Fault injection ---

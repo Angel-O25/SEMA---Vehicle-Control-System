@@ -1,7 +1,6 @@
 #include "vcs_hallsensor.h"
 #include "vcs_pins.h"
-
-#define WHEEL_CIRCUMFERENCE_M 1.2764f
+#include "vcs_constants.h"
 
 volatile uint32_t hall_pulse_count = 0;
 uint32_t last_calc_time = 0;
