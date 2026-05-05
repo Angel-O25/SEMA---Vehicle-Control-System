@@ -41,6 +41,8 @@
 #include "vcs_deadman.h"
 #include "vcs_web.h"
 
+
+static portMUX_TYPE logMux = portMUX_INITIALIZER_UNLOCKED; // Mutex for system log buffer access
 extern DriveMode current_drive_mode;
 
 extern int16_t  current_target_rpm;
@@ -74,7 +76,10 @@ const int DISABLE_WEB_WIFI = 0;
 
 void vcs_log(String msg) {
     Serial.println("[VCS LOG] " + msg);
+    portENTER_CRITICAL(&logMux);
     systemLogBuffer += msg + "|";
+    if (systemLogBuffer.length() > 4096) systemLogBuffer.remove(0,2048); // Prevent unbounded growth
+    portEXIT_CRITICAL(&logMux);
 }
 
 // ============================================================

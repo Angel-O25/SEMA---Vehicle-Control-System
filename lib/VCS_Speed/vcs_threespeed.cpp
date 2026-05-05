@@ -9,12 +9,11 @@ void initThreeSpeed() {
 }
 
 void updateThreeSpeed() {
-    // Hardware switches are deprecated in the ESP32 layout.
-    // Lock to 100% capacity; Jetson handles speed limiting via target RPM.
+    // FIX #10: For testing, cycle through modes every 5 seconds.
+    // In a real implementation, this would be triggered by a button press or command.
     if (current_drive_mode != DRIVE_HIGH) {
         setDriveMode(DRIVE_HIGH);
     }
-    return; // Bypass physical pin polling entirely
 }
 
 void setDriveMode(DriveMode mode) {

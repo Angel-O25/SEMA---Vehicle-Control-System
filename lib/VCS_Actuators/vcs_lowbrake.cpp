@@ -8,7 +8,7 @@
 //   - Brake-to-MC signal  (GPIO 12, active LOW = brake on)
 // =========================================================
 
-bool is_brake_pressed = false;
+bool is_brake_pressed = isPhysicalBrakePressed; //  Reflects the physical pedal state, debounced and updated in updateLowBrake().   
 
 // Debounce state for the pedal switch
 static uint32_t lastDebounceTime = 0;

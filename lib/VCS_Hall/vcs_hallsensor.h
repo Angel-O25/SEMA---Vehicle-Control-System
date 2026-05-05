@@ -15,4 +15,7 @@ float getMeasuredRPM();
 float getMeasuredSpeedKmh();
 bool consumeNewRPMSample();
 
+void IRAM_ATTR handleHallInterrupt();
+uint32_t getHallFalseEdgeCount();
+
 #endif // VCS_HALLSENSOR_H

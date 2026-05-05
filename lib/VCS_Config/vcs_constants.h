@@ -68,7 +68,18 @@
 // ============================================================
 //  FAULT CODES
 // ============================================================
-#define VCS_FAULT_NONE        0x0000
+// --- Fault Bit Definitions ---
+// Recoverable faults map to FAULT_STATE and clear when the underlying
+// condition resolves.
+#define VCS_FAULT_NONE               0x00000000u
+#define VCS_FAULT_UART_CRC           0x00000001u   // CRC mismatch on command packet
+#define VCS_FAULT_HEARTBEAT_LOST     0x00000002u   // ANS heartbeat timeout
+#define VCS_FAULT_SENSOR_SPIKE       0x00000004u   // Hall / steering pot out-of-range
+#define VCS_FAULT_OVERCURRENT        0x00000008u   // Motor controller fault line
+
+// --- Safety Timing Constants ---
+// (Candidate to relocate into vcs_constants.h.)
+#define DMS_HOLD_REQUIRED_MS         1000u         // SEM spec: 1.0 s dual-grip hold
 
 // Jetson command timeout in autonomous mode.
 // Triggered when no valid UART packet arrives within
@@ -86,8 +97,8 @@ constexpr uint16_t FAULT_SIGNAL_TIMEOUT = 0x0004;
 // ============================================================
 #define MIN_PWM_OUT       0
 #define MAX_PWM_OUT       1023
-#define THROTTLE_MIN_INPUT 650    // Legacy alias — use THROTTLE_MIN_INPUT_MV
-#define THROTTLE_MAX_INPUT 3000   // Legacy alias — use THROTTLE_MAX_INPUT_MV
+#define THROTTLE_MIN_INPUT 201    // = map(650mV, 0, 3300mV, 0, 1023)
+#define THROTTLE_MAX_INPUT 930   // = map(3000mV, 0, 3300mV, 0, 1023)
 
 
 // ============================================================
@@ -96,6 +107,5 @@ constexpr uint16_t FAULT_SIGNAL_TIMEOUT = 0x0004;
 //  #include "vcs_constants.h" continue to compile unchanged.
 // ============================================================
 #include "vcs_calibration.h"
-
 
 #endif // VCS_CONSTANTS_H

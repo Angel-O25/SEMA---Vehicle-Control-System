@@ -46,6 +46,7 @@
 #include "vcs_web.h"
 #include "vcs_hallsensor.h"
 #include "vcs_steering.h"
+#include "vcs_constants.h"
 
 // Hall ISR attach/detach lives in vcs_hallsensor.cpp
 extern void hall_interrupts_attach();
@@ -55,7 +56,7 @@ extern void hall_interrupts_detach();
 extern void forceBrakeEngagement(bool engage);
 
 static uint32_t g_systemFaults = 0;
-
+portMUX_TYPE logMux = portMUX_INITIALIZER_UNLOCKED;
 // =========================================================
 // FIX #4: Promoted static locals from MANUAL_STATE switch
 // case to file scope. Static locals inside a switch case
@@ -256,6 +257,7 @@ void updateStateMachine() {
 // it even after the condition resolved.
 // =========================================================
 uint32_t getSystemFaults() {
+    portENTER_CRITICAL(&logMux);
     return g_systemFaults;
 }
 
@@ -307,4 +309,8 @@ bool isAutonomousMode()        { return currentState == AUTONOMOUS_STATE; }
 uint32_t getDMSHoldStartTime() { return dmsStartTime; }
 bool isDrivingState() {
     return (currentState == MANUAL_STATE || currentState == AUTONOMOUS_STATE);
+}
+
+bool isEstopLatched() {
+    return s_estopLatched;
 }

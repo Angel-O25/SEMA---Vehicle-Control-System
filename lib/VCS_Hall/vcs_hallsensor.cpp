@@ -2,15 +2,29 @@
 #include "vcs_pins.h"
 #include "vcs_constants.h"
 
+// ============================================================
+//  HALL SENSOR IMPLEMENTATION
 volatile uint32_t hall_pulse_count = 0;
 uint32_t last_calc_time = 0;
 float current_rpm = 0.0f;
 static bool s_new_rpm_sample = false;
 
-// MUST be declared before attachInterrupt uses it
+// For debugging: count false edges that are too close together
+constexpr uint32_t MIN_PULSE_WIDTH_US = 800;
+static volatile uint32_t s_lastEdge_us = 0;
+static volatile uint32_t s_falseEdges  = 0;
+
 void IRAM_ATTR handleHallInterrupt() {
-    hall_pulse_count++;
+    uint32_t now = micros();
+    if (now - s_lastEdge_us < MIN_PULSE_WIDTH_US) {
+        s_falseEdges++;
+        return;
+    }
+    s_lastEdge_us = now;
+    hall_pulse_count++ ;
 }
+
+uint32_t getHallFalseEdgeCount() { return s_falseEdges; }
 
 void initHallSensors() {
     // ESP32 supports internal pulldowns

@@ -286,13 +286,13 @@ void broadcastVehicleTelemetry(uint8_t gear) {
         printHexDebug("TX [ESP32 -> JETSON]: ", txDebug, 14);
     }
 
-    Serial2.write((uint8_t)0xAA);
-    Serial2.write((uint8_t)0x55);
-    Serial2.write(buf, 9);
-    Serial2.write((uint8_t)((crc >> 8) & 0xFF));
-    Serial2.write((uint8_t)( crc       & 0xFF));
-    Serial2.write((uint8_t)0xFF);
-
+    uint8_t frame[14] = {
+        0xAA, 0x55, buf[0], buf[1], buf[2], buf[3], buf[4],
+        buf[5], buf[6], buf[7], buf[8],
+        (uint8_t)((crc >> 8) & 0xFF), (uint8_t)(crc & 0xFF), 0xFF
+    };
+    Serial2.write(frame, 14);
+ 
     // FIX #7: Single snprintf build, single String assignment.
     {
         char txHexBuf[14 * 3 + 1];

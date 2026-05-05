@@ -32,14 +32,15 @@
 #include "vcs_display.h"
 #include "vcs_simulation.h"
 #include "vcs_web.h"
+#include <esp_task_wdt.h>
 
 // ============================================================
 //  TASK HANDLES & FORWARD DECLARATIONS
 // ============================================================
 TaskHandle_t ControlTaskHandle = NULL;
 static constexpr bool VCS_VERBOSE_TASK_LOGS = false;
-
 extern void WebServerTask(void *pvParameters);
+static uint16_t cachedSteering = COMM_STEER_CENTER;  // For display task
 
 // ============================================================
 //  FIX 1 — SIGNAL STALENESS GUARD
@@ -54,75 +55,37 @@ struct SignalFrame {
     }
 };
 
-static SemaphoreHandle_t g_signalMutex = NULL;
-SignalFrame g_steerCmd;
-SignalFrame g_throttleCmd;
-SignalFrame g_brakeCmd;
-
-// ============================================================
-//  FIX 3 — HALL SENSOR ISR DEBOUNCE (EMI mitigation)
-// ============================================================
-constexpr uint32_t MIN_PULSE_WIDTH_US = 800;
-
-static volatile uint32_t g_lastHallEdge_us = 0;
-static volatile uint32_t g_hallFalseEdges  = 0;
-
-extern void hallSensorISR_impl();
-
-void IRAM_ATTR hallSensorISR() {
-    uint32_t now = micros();
-    uint32_t dt  = now - g_lastHallEdge_us;
-
-    if (dt < MIN_PULSE_WIDTH_US) {
-        g_hallFalseEdges++;
-        return;
-    }
-
-    g_lastHallEdge_us = now;
-    hallSensorISR_impl();
-}
-
-uint32_t getHallFalseEdgeCount() { return g_hallFalseEdges; }
-
 // ============================================================
 //  TASK BODIES
 // ============================================================
 
 void ControlTask(void *pvParameters) {
+    esp_task_wdt_init(10, true); // 10 second timeout, panic on trigger
     for (;;) {
-        if (isAutonomousMode()) {
-            bool stale = false;
-            if (xSemaphoreTake(g_signalMutex, pdMS_TO_TICKS(2)) == pdTRUE) {
-                stale = !g_steerCmd.valid()    ||
-                        !g_throttleCmd.valid() ||
-                        !g_brakeCmd.valid();
-                xSemaphoreGive(g_signalMutex);
-            }
-            if (stale) triggerFault(FAULT_SIGNAL_TIMEOUT);
-        }
-
-        // FIX #2 call site: removed getSystemFaults() argument.
-        // updateStateMachine() now reads g_systemFaults directly.
-        // Old: updateStateMachine(getSystemFaults());
         updateStateMachine();
-
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
 void CommTask() {
-    handleIncomingUART();
+    cachedSteering = getMeasuredSteering(); // For display task
 
+    handleIncomingUART();
     updateDeadman();
     updateLowBrake();
     updateThreeSpeed();
     updateReverse();
     updateUART();
+    updateHallCalculations();
+    updateThrottle(getMeasuredRPM(), getTargetRPM());
+    updateSteeringPID(getTargetSteering(), isAutonomousMode());
 
     updateRelays(isAutonomousMode());
     if (VCS_VERBOSE_TASK_LOGS) {
         Serial.println(F(" -> CommTask Finished!"));
     }
+
+    updateSteeringPID(getTargetSteering(), isAutonomousMode());
 }
 
 void UITask() {
@@ -177,50 +140,44 @@ void setup() {
     Serial.println(F("--- VCS v1.5 DIAGNOSTIC BOOT ---"));
     Serial.println(F("Testing modules one by one..."));
 
-    g_signalMutex = xSemaphoreCreateMutex();
-    if (!g_signalMutex) {
-        Serial.println(F("[FATAL] Mutex alloc failed"));
-        while (1) delay(1000);
-    }
-
     Serial.print(F("1. State... "));
     initState_Machine();
     Serial.println(F("OK"));
-    delay(500);
+    delay(10);
 
     Serial.print(F("2. UART... "));
     initUART();
     Serial.println(F("OK"));
-    delay(500);
+    delay(10);
 
     Serial.print(F("3. Throttle/Brake... "));
     initThrottle();
     initLowBrake();
     Serial.println(F("OK"));
-    delay(500);
+    delay(10);
 
     Serial.print(F("4. Safety... "));
     initDeadman();
     initRelays();
     Serial.println(F("OK"));
-    delay(500);
+    delay(10);
 
     Serial.print(F("5. Steering... "));
     initSteering();
     Serial.println(F("OK"));
-    delay(500);
+    delay(10);
 
     Serial.print(F("6. Sensors... "));
     initHallSensors();
     initThreeSpeed();
     initReverse();
     Serial.println(F("OK"));
-    delay(500);
+    delay(10);
 
     Serial.print(F("7. Display... "));
     initDisplay();
     Serial.println(F("OK"));
-
+    delay(10);
     Serial.println(F("--- SURVIVED BOOT SEQUENCE ---"));
 
     xTaskCreatePinnedToCore(ControlTask,    "Control",   4096, NULL, 5, &ControlTaskHandle, 1);

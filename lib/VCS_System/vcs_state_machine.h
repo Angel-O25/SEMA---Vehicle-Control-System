@@ -21,19 +21,6 @@ enum VcsState {
                        //       Treat FAULT as the highest unrecoverable state for now.
 };
 
-// --- Fault Bit Definitions ---
-// Recoverable faults map to FAULT_STATE and clear when the underlying
-// condition resolves.
-#define VCS_FAULT_NONE               0x00000000u
-#define VCS_FAULT_UART_CRC           0x00000001u   // CRC mismatch on command packet
-#define VCS_FAULT_HEARTBEAT_LOST     0x00000002u   // ANS heartbeat timeout
-#define VCS_FAULT_SENSOR_SPIKE       0x00000004u   // Hall / steering pot out-of-range
-#define VCS_FAULT_OVERCURRENT        0x00000008u   // Motor controller fault line
-
-// --- Safety Timing Constants ---
-// (Candidate to relocate into vcs_constants.h.)
-#define DMS_HOLD_REQUIRED_MS         1000u         // SEM spec: 1.0 s dual-grip hold
-
 // Global state.
 //
 // NOTE on concurrency: currentState is currently written by task_control
@@ -64,5 +51,6 @@ const char* getStateName(VcsState state);
 // --- Logic helpers ---
 bool isAutonomousMode();
 bool isDrivingState();
+bool isEstopLatched();
 
 #endif // VCS_STATE_MACHINE_H
