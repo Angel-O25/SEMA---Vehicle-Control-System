@@ -32,6 +32,10 @@ void initLowBrake() {
     pinMode(TB6612_IN1_PIN, OUTPUT);
     pinMode(TB6612_IN2_PIN, OUTPUT);
     pinMode(TB6612_PWM_PIN, OUTPUT);
+    ledcSetup(BRAKE_LEDC_CH, BRAKE_LEDC_FREQ, BRAKE_LEDC_RES);
+    ledcAttachPin(TB6612_PWM_PIN, BRAKE_LEDC_CH);
+    ledcWrite(BRAKE_LEDC_CH, 0);
+
 
     // Brake signal to motor controller (active LOW)
     pinMode(BRAKE_MC_PIN, OUTPUT);
@@ -75,6 +79,25 @@ void updateLowBrake() {
         brake_actuator_coast();
         retracting = false;
     }
+
+        // In updateLowBrake() — protect against stuck limit switch
+    static uint32_t extend_started_ms = 0;
+    static bool extending = false;
+
+    // When forceBrakeEngagement(true) starts an extend:
+    if (!extending && digitalRead(PIN_LIMIT_SWITCH) != HIGH) {
+        brake_actuator_extend();
+        extend_started_ms = millis();
+        extending = true;
+    }
+
+    if (extending) {
+        if (digitalRead(PIN_LIMIT_SWITCH) == HIGH ||
+            (millis() - extend_started_ms) >= BRAKE_EXTEND_TIMEOUT_MS) {
+            brake_actuator_coast();
+            extending = false;
+        }
+    }
 }
 
 void forceBrakeEngagement(bool engage) {
@@ -117,17 +140,17 @@ bool isPhysicalBrakePressed() {
 static void brake_actuator_extend() {
     digitalWrite(TB6612_IN1_PIN, HIGH);
     digitalWrite(TB6612_IN2_PIN, LOW);
-    analogWrite(TB6612_PWM_PIN, BRAKE_PWM);
+    ledcWrite(BRAKE_LEDC_CH, BRAKE_PWM);   // was analogWrite
 }
 
 static void brake_actuator_retract() {
     digitalWrite(TB6612_IN1_PIN, LOW);
     digitalWrite(TB6612_IN2_PIN, HIGH);
-    analogWrite(TB6612_PWM_PIN, BRAKE_PWM);
+    ledcWrite(BRAKE_LEDC_CH, BRAKE_PWM);
 }
 
 static void brake_actuator_coast() {
     digitalWrite(TB6612_IN1_PIN, LOW);
     digitalWrite(TB6612_IN2_PIN, LOW);
-    analogWrite(TB6612_PWM_PIN, 0);
+    ledcWrite(BRAKE_LEDC_CH, 0);
 }

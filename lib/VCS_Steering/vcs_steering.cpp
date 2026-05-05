@@ -10,6 +10,9 @@ float smoothedSteering = 0.0f;
 
 
 static int s_last_freq_hz = -1;
+static bool s_last_dir = false;
+bool dir;
+
 
 #if SIMULATION_MODE
 static constexpr float STEPS_TO_COMM_SCALE = 0.05f;
@@ -100,6 +103,18 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
         digitalWrite(PIN_STEER_ENA, HIGH); 
         ledcWrite(0, 0);
         s_last_freq_hz = -1; 
+
+        if (fabsf(output) < 5.0f) {
+        dir = s_last_dir;
+    } else {
+        dir = (output > 0);
+    }
+
+    // Before changing direction in updateSteeringPID():
+    if (dir != s_last_dir) {
+        digitalWrite(PIN_STEER_DIR, dir ? HIGH : LOW);
+        delayMicroseconds(STEER_DM542_DIR_SETUP_US);   // 5µs from cal
+    }
 
         // FIX 2: clear PID state on transition out of automatic.
         // Without this, the integral persists into the next autonomous

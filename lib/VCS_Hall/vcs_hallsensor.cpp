@@ -15,13 +15,10 @@ static volatile uint32_t s_lastEdge_us = 0;
 static volatile uint32_t s_falseEdges  = 0;
 
 void IRAM_ATTR handleHallInterrupt() {
-    uint32_t now = micros();
-    if (now - s_lastEdge_us < MIN_PULSE_WIDTH_US) {
-        s_falseEdges++;
-        return;
-    }
+    uint64_t now = esp_timer_get_time();
+    if (now - s_lastEdge_us < HALL_DEBOUNCE_US) return;   // 2000µs from cal
     s_lastEdge_us = now;
-    hall_pulse_count++ ;
+    hall_pulse_count++;
 }
 
 uint32_t getHallFalseEdgeCount() { return s_falseEdges; }
