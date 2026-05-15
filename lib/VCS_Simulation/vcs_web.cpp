@@ -171,7 +171,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         let lastLinkState = true;
 
         // Visual Setup
-        const labels = ["HDR", "RPM_H", "RPM_L", "STR_H", "STR_L", "MODE", "BRK", "PAD1", "PAD2", "PAD3", "PAD4", "CRC_H", "CRC_L", "FTR"];
+        const labels = ["SYNC", "SYNC", "TYPE", "LEN", "MODE", "RPM_H", "RPM_L", "STR_H", "STR_L", "BRK", "REV", "CRC_H", "CRC_L", "FTR"];
         const grid = document.getElementById('packet_inspector');
         let prevBytes = [];
         
@@ -278,9 +278,9 @@ const char index_html[] PROGMEM = R"rawliteral(
                         prevBytes = bytes;
                         
                         // Math breakdown
-                        document.getElementById('calc_rpm').innerText = `${data.t_rpm} ((0x${bytes[1]}<<8)|0x${bytes[2]})`;
-                        document.getElementById('calc_steer').innerText = `${data.t_steer} ((0x${bytes[3]}<<8)|0x${bytes[4]})`;
-                        document.getElementById('calc_brake').innerText = `${data.t_brake}`;
+                        document.getElementById('calc_rpm').innerText = `${data.t_rpm} ((0x${bytes[5]}<<8)|0x${bytes[6]})`;
+                        document.getElementById('calc_steer').innerText = `${data.t_steer} ((0x${bytes[7]}<<8)|0x${bytes[8]})`;
+                        document.getElementById('calc_brake').innerText = `${data.t_brake} (0x${bytes[9]})`;
                     }
                 }
 
@@ -380,13 +380,19 @@ String getTelemetryJSON() {
         json += "\"rx_hex\":\"-- NO LINK --\",";
     }
 
-    json += "\"tx_hex\":\""      + last_tx_hex + "\",";
+json += "\"tx_hex\":\""      + last_tx_hex + "\",";
     // FIX #13b: Link status flag — frontend uses this to gate display.
     json += "\"jetson_link\":"   + String(linked ? "true" : "false") + ",";
-    json += "\"sys_logs\":\""    + systemLogBuffer + "\"";
+    
+    // Safely extract and clear logs to prevent memory corruption
+    portENTER_CRITICAL(&logMux);
+    String localLogs = systemLogBuffer;
+    systemLogBuffer = "";
+    portEXIT_CRITICAL(&logMux);
+
+    json += "\"sys_logs\":\""    + localLogs + "\"";
     json += "}";
 
-    systemLogBuffer = "";
     return json;
 }
 

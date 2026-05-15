@@ -20,12 +20,12 @@
 // ============================================================
 #define MOTOR_POLE_PAIRS              23
 #define HALL_TRANSITIONS_PER_MECH_REV 46
-#define GEAR_REDUCTION                1.0f       // direct drive
+#define GEAR_REDUCTION                2.0f       // direct drive
 #define RPM_CALIBRATION_FACTOR        0.9587f    // measured correction
 #define HALL_DEBOUNCE_US              2000       // motor PWM noise filter
 #define RPM_SAMPLE_WINDOW_MS          500
 #define RPM_TIMEOUT_MS                1000
-#define MAX_SPEED_KMPH                35.0f      // sanity reject above this
+#define MAX_SPEED_KMPH                60.0f      // sanity reject above this
 #define WHEEL_CIRCUMFERENCE_M         1.2764f
 
 
@@ -55,11 +55,11 @@
 //  3590S pot powered at 3.3V, ADC1_CH7 (GPIO35).
 //  Values bench-measured via 'set full_l/full_r/center' commands.
 // ============================================================
-#define STEER_POT_MIN_MV             200      // full-left
-#define STEER_POT_CENTER_MV          1666     // mechanical center
-#define STEER_POT_MAX_MV             2776     // full-right
-#define STEPS_FULL_L                 -2000    // stepper position at full-left
-#define STEPS_FULL_R                  2000    // stepper position at full-right
+#define STEER_POT_MIN_MV             200.0f      // full-left
+#define STEER_POT_CENTER_MV          1666.0f     // mechanical center
+#define STEER_POT_MAX_MV             2776.0f     // full-right
+#define STEPS_FULL_L                -2000.0f    // stepper position at full-left
+#define STEPS_FULL_R                 2000.0f    // stepper position at full-right
 
 
 // ============================================================

@@ -204,7 +204,7 @@ static void processCommandPacket(const uint8_t *pkt) {
     int16_t  rpm       =  (int16_t)(((uint16_t)pkt[5] << 8) | pkt[6]);
     uint16_t steer     =  ((uint16_t)pkt[7] << 8) | pkt[8];
     uint8_t  brake     =  pkt[9];
-    bool     reverseOn = (pkt[10] == 1);
+    bool reverseOn = (pkt[10] & 0x01) != 0;
 
     // FIX #8: All writes inside one critical section.
     // Legacy mirrors previously written outside the mutex,
@@ -244,18 +244,27 @@ static uint16_t calculateCRC16(const uint8_t *data, uint8_t length) {
 // vcs_threespeed. Update vcs_uart.h signature to match.
 // =========================================================
 void broadcastVehicleTelemetry(uint8_t gear) {
+    (void)gear;   // GEAR no longer transmitted per fixed Sidlak spec.
+                  // Parameter retained for API compatibility — remove
+                  // from signature in a future cleanup pass.
+
     float    rpm;
     uint16_t steer;
-    uint8_t  state = (uint8_t)currentState;
-    uint8_t  rev   = isReverseEngaged() ? 1 : 0;
+    uint8_t  mode  = (uint8_t)currentState;     // ACTUAL_MODE — first in payload
+    uint8_t  brake = getTargetBrake();          // ACTUAL_BRAKE — echo commanded value
+
+    // Reverse encoded as bitfield: bit 0 = reverse, bit 1 = horn (reserved),
+    // bits 2-7 reserved per spec.
+    uint8_t revField = isReverseEngaged() ? 0x01 : 0x00;
 
 #if SIMULATION_MODE
     rpm   = getSimulatedRPM();
     steer = getSimulatedSteering();
-    Serial.print(F("SIM -> RPM:"));  Serial.print(rpm);
-    Serial.print(F(" Steer:"));       Serial.print(steer);
-    Serial.print(F(" Gear:"));        Serial.print(gear);
-    Serial.print(F(" Rev:"));         Serial.println(rev);
+    Serial.print(F("SIM -> Mode:")); Serial.print(mode);
+    Serial.print(F(" RPM:"));        Serial.print(rpm);
+    Serial.print(F(" Steer:"));      Serial.print(steer);
+    Serial.print(F(" Brake:"));      Serial.print(brake);
+    Serial.print(F(" Rev:"));        Serial.println(revField);
 #else
     rpm   = getMeasuredRPM();
     steer = getMeasuredSteering();
@@ -263,42 +272,48 @@ void broadcastVehicleTelemetry(uint8_t gear) {
 
     int16_t rpmInt = (int16_t)rpm;
 
+    // Fixed Sidlak protocol — ESP32 → ANS payload layout:
+    //   [0] MSG_TYPE       0x02
+    //   [1] LENGTH         0x07 (7-byte payload)
+    //   [2] ACTUAL_MODE
+    //   [3-4] ACTUAL_RPM   (uint16, big-endian)
+    //   [5-6] ACTUAL_STEER (uint16, big-endian)
+    //   [7] ACTUAL_BRAKE
+    //   [8] ACTUAL_REVERSE (bitfield: bit 0 = reverse, bit 1 = horn, 2-7 reserved)
     uint8_t buf[9];
-    buf[0] = 0x02;
-    buf[1] = 0x07;
-    buf[2] = (uint8_t)((rpmInt >> 8) & 0xFF);
-    buf[3] = (uint8_t)( rpmInt       & 0xFF);
-    buf[4] = (uint8_t)((steer  >> 8) & 0xFF);
-    buf[5] = (uint8_t)( steer        & 0xFF);
-    buf[6] = state;
-    buf[7] = gear;
-    buf[8] = rev;
+    buf[0] = 0x02;                              // MSG_TYPE
+    buf[1] = 0x07;                              // LENGTH
+    buf[2] = mode;                              // ACTUAL_MODE  (frame byte 4)
+    buf[3] = (uint8_t)((rpmInt >> 8) & 0xFF);   // ACTUAL_RPM_H (frame byte 5)
+    buf[4] = (uint8_t)( rpmInt       & 0xFF);   // ACTUAL_RPM_L (frame byte 6)
+    buf[5] = (uint8_t)((steer  >> 8) & 0xFF);   // ACTUAL_STEER_H (frame byte 7)
+    buf[6] = (uint8_t)( steer        & 0xFF);   // ACTUAL_STEER_L (frame byte 8)
+    buf[7] = brake;                             // ACTUAL_BRAKE (frame byte 9)
+    buf[8] = revField;                          // ACTUAL_REVERSE bitfield (frame byte 10)
 
     uint16_t crc = calculateCRC16(buf, 9);
 
-    uint8_t txDebug[14] = {
-        0xAA, 0x55, buf[0], buf[1], buf[2], buf[3], buf[4],
+    uint8_t frame[14] = {
+        0xAA, 0x55,
+        buf[0], buf[1], buf[2], buf[3], buf[4],
         buf[5], buf[6], buf[7], buf[8],
-        (uint8_t)((crc >> 8) & 0xFF), (uint8_t)(crc & 0xFF), 0xFF
+        (uint8_t)((crc >> 8) & 0xFF),
+        (uint8_t)( crc       & 0xFF),
+        0xFF
     };
 
     if (UART_DEBUG_LOGS) {
-        printHexDebug("TX [ESP32 -> JETSON]: ", txDebug, 14);
+        printHexDebug("TX [ESP32 -> JETSON]: ", frame, 14);
     }
 
-    uint8_t frame[14] = {
-        0xAA, 0x55, buf[0], buf[1], buf[2], buf[3], buf[4],
-        buf[5], buf[6], buf[7], buf[8],
-        (uint8_t)((crc >> 8) & 0xFF), (uint8_t)(crc & 0xFF), 0xFF
-    };
     Serial2.write(frame, 14);
- 
+
     // FIX #7: Single snprintf build, single String assignment.
     {
         char txHexBuf[14 * 3 + 1];
         char *p = txHexBuf;
         for (int i = 0; i < 14; i++) {
-            p += sprintf(p, "%02X ", txDebug[i]);
+            p += sprintf(p, "%02X ", frame[i]);
         }
         last_tx_hex = String(txHexBuf);
         last_tx_hex.toUpperCase();

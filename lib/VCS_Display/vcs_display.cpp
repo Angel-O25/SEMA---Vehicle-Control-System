@@ -23,13 +23,6 @@ void updateDisplay(float rpm, uint16_t steer, DriveMode speedMode) {
     display.clearDisplay();
     display.setCursor(0,0);
     display.setTextSize(2);
-    
-    if(currentState == FAULT_STATE) {
-        display.println("!! CRITICAL !!");
-    } else {
-        display.println(currentState == AUTONOMOUS_STATE ? "AUTO MODE" : "MANUAL");
-    }
-
     display.setTextSize(1);
     
     display.print("\nRPM:   ");
@@ -38,7 +31,7 @@ void updateDisplay(float rpm, uint16_t steer, DriveMode speedMode) {
     display.print("STEER: ");
     display.println(steer);
     
-    display.print("GEAR:  ");
+    display.print("SPEED:  ");
     if (isReverseEngaged()) {
         display.println("REVERSE"); 
     } else {

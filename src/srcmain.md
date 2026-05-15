@@ -1,3 +1,35 @@
+# Project Files Export
+
+Export time: 5/15/2026, 6:13:41 PM
+
+Source directory: `src`
+
+Output file: `project-files.md`
+
+## Directory Structure
+
+```
+src
+└── main.cpp
+```
+
+## File Statistics
+
+- Total files: 1
+- Total size: 6.7 KB
+
+### File Type Distribution
+
+| Extension | Files | Total Size |
+| --- | --- | --- |
+| .cpp | 1 | 6.7 KB |
+
+## File Contents
+
+### main.cpp
+
+```cpp
+// main.cpp
 // main.cpp — Option A revision
 // ============================================================
 //  CHANGES FROM PREVIOUS REVISION:
@@ -204,3 +236,5 @@ void setup() {
 // ============================================================
 void loop() {
 }
+```
+

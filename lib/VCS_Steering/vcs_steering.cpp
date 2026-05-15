@@ -99,7 +99,7 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     setpoint = (float)target_position;
 
     // --- SAFETY LOCKOUT (renamed from misleading "SECURITY OVERRIDE") ---
-    if (!is_automatic || currentState == FAULT_STATE) {
+    if (!is_automatic) {
         digitalWrite(PIN_STEER_ENA, HIGH); 
         ledcWrite(0, 0);
         s_last_freq_hz = -1; 
