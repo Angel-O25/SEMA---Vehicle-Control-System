@@ -30,7 +30,7 @@ void initHallSensors() {
 }
 
 void hall_interrupts_attach() {
-    attachInterrupt(digitalPinToInterrupt(PIN_HALL_SPEED), handleHallInterrupt, RISING);
+    attachInterrupt(digitalPinToInterrupt(PIN_HALL_SPEED), handleHallInterrupt, CHANGE);
 }
 
 void hall_interrupts_detach() {
@@ -49,7 +49,7 @@ void updateHallCalculations() {
         interrupts();
 
         // 2. Math for RPM
-        float pulses_per_rev = (float)MOTOR_POLE_PAIRS; 
+        float pulses_per_rev = (float)HALL_TRANSITIONS_PER_MECH_REV; 
         pulses_per_rev *= GEAR_REDUCTION; 
         
         if (pulses > 0) {

@@ -4,10 +4,6 @@
 #include <Arduino.h>
 #include "vcs_pins.h"
 #include "vcs_constants.h"
-#include "vcs_threespeed.h"
-
-// Pulled in for the gear byte in broadcastVehicleTelemetry()
-extern DriveMode current_drive_mode;
 
 // =========================================================
 // Core UART functions

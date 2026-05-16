@@ -34,7 +34,6 @@
 #include "vcs_state_machine.h"
 #include "vcs_hallsensor.h"
 #include "vcs_steering.h"
-#include "vcs_threespeed.h"
 #include "vcs_reverse.h"
 #include "vcs_uart.h"
 #include "vcs_lowbrake.h"
@@ -43,7 +42,6 @@
 
 
 static portMUX_TYPE logMux = portMUX_INITIALIZER_UNLOCKED; // Mutex for system log buffer access
-extern DriveMode current_drive_mode;
 
 extern int16_t  current_target_rpm;
 extern uint16_t current_target_steer;
@@ -339,11 +337,6 @@ String getTelemetryJSON() {
     uint8_t  steer_l  =  steer_adc       & 0xFF;
     uint8_t  u_state  = 3;
 
-    String speed_mode = "UNKNOWN";
-    if      (current_drive_mode == DRIVE_LOW)  speed_mode = "LOW (30%)";
-    else if (current_drive_mode == DRIVE_MED)  speed_mode = "MID (60%)";
-    else if (current_drive_mode == DRIVE_HIGH) speed_mode = "HIGH (100%)";
-
     // FIX #13b: Check link once and use the result consistently.
     bool linked = ansHeartbeatReceived();
 
@@ -361,7 +354,6 @@ String getTelemetryJSON() {
     json += "\"steer_h\":\"0x"   + String(steer_h, HEX) + "\",";
     json += "\"steer_l\":\"0x"   + String(steer_l, HEX) + "\",";
     json += "\"u_state\":\""     + String(u_state) + "\",";
-    json += "\"three_speed\":\""  + speed_mode + "\",";
 
     // FIX #13b: When no link, report "--" instead of stale numeric values.
     // The frontend also guards these via jetson_link, but the server

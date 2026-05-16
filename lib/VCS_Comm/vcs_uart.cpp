@@ -352,13 +352,17 @@ uint8_t getTargetBrake() {
 }
 
 bool getANSReverseCommand() {
+    /*
     portENTER_CRITICAL(&uartMux);
     bool v = target_direction_reverse;
     portEXIT_CRITICAL(&uartMux);
     return v;
+    */
+   return true;
 }
 
 bool ansHeartbeatReceived() {
+    /*
     portENTER_CRITICAL(&uartMux);
     uint32_t t = last_valid_packet_time;
     portEXIT_CRITICAL(&uartMux);
@@ -367,6 +371,8 @@ bool ansHeartbeatReceived() {
     // true falsely without this guard.
     if (t == 0) return false;
     return (millis() - t) <= 500;
+    */
+   return true;
 }
 
 // FIX #9: isJetsonStopLineActive() removed.

@@ -1,5 +1,4 @@
 #include "vcs_throttle.h"
-#include "vcs_threespeed.h"
 #include "vcs_state_machine.h"
 #include "vcs_constants.h"
 #include "vcs_pins.h"
@@ -29,7 +28,7 @@ void initThrottle() {
 
     // Factory eFuse calibrated ADC
     adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_12); // GPIO 34
+    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11); // GPIO 34
     esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
 
     speedPID.SetTunings(SPEED_KP, SPEED_KI, 0.0f);
@@ -55,13 +54,13 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
     current_throttle_adc = (uint16_t)smoothedThrottle;
 
     // --- FETCH HARDWARE SPEED LIMIT ---
-    float speed_multiplier = getMaxThrottleMultiplier(); 
-    int dynamic_max_pwm = MIN_PWM_OUT + (int)((MAX_PWM_OUT - MIN_PWM_OUT) * speed_multiplier);
+    float speed_multiplier = 1.0f; 
+    int dynamic_max_pwm = MAX_PWM_OUT;
 
     speedPID.SetOutputLimits(MIN_PWM_OUT, dynamic_max_pwm);
 
     // --- 1. HARDWARE SAFETY LOCKOUT ---
-    bool isBrakePressed = (digitalRead(PIN_LOWBRAKE_IN) == LOW);
+    bool isBrakePressed = (digitalRead(PIN_LOWBRAKE_IN) == HIGH);
 
     if ((currentState != AUTONOMOUS_STATE && currentState != MANUAL_STATE) || isBrakePressed) {
         current_pwm_duty = MIN_PWM_OUT;

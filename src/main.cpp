@@ -29,7 +29,6 @@
 #include "vcs_relays.h"
 #include "vcs_steering.h"
 #include "vcs_hallsensor.h"
-#include "vcs_threespeed.h"
 #include "vcs_reverse.h"
 #include "vcs_display.h"
 #include "vcs_simulation.h"
@@ -66,7 +65,7 @@ void ControlTask(void *pvParameters) {
     }
 }
 
-void CommTask() {
+void runCommCycle() {
     // Read steering ONCE per tick so the slew-rate limit in
     // getMeasuredSteering() applies exactly once per control cycle.
     cachedSteering = getMeasuredSteering();
@@ -74,7 +73,6 @@ void CommTask() {
     handleIncomingUART();
     updateDeadman();
     updateLowBrake();
-    updateThreeSpeed();
     updateReverse();
     updateUART();
     updateHallCalculations();
@@ -89,15 +87,8 @@ void CommTask() {
 }
 
 void UITask() {
-    uint8_t gear = 1;   // default: normal
-    if      (current_drive_mode == DRIVE_LOW)  gear = 0;
-    else if (current_drive_mode == DRIVE_HIGH) gear = 2;
-
-    broadcastVehicleTelemetry(gear);
-
-    if (VCS_VERBOSE_TASK_LOGS) {
-        Serial.println(F("   -> UITask Finished!"));
-    }
+    uint8_t gear = 1;
+    broadcastVehicleTelemetry(gear); // gear is hardcoded to 1 for now; can be expanded later
 }
 
 // ============================================================
@@ -107,7 +98,7 @@ void ESP32_CommLoop(void *pvParameters) {
     esp_task_wdt_add(NULL);
     for (;;) {
         esp_task_wdt_reset();
-        CommTask();
+        runCommCycle();
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -128,7 +119,7 @@ void DisplayLoop(void *pvParameters) {
     for (;;) {
         esp_task_wdt_reset();
         // Use cachedSteering set by CommTask — avoids double slew-limiting.
-        updateDisplay(getMeasuredRPM(), cachedSteering, current_drive_mode);
+        updateDisplay(getMeasuredRPM(), cachedSteering);
         vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 }
@@ -181,7 +172,6 @@ void setup() {
 
     Serial.print(F("6. Sensors... "));
     initHallSensors();
-    initThreeSpeed();
     initReverse();
     Serial.println(F("OK"));
     delay(10);

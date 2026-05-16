@@ -44,5 +44,5 @@ void updateDeadman() {
 }
 
 bool isDeadmanActive() {
-    return autoStateRequested;
+    return true;
 }

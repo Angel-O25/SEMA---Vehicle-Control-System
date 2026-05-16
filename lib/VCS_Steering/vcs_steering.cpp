@@ -39,7 +39,7 @@ void initSteering() {
     ledcSetup(0, 1000, 8);
     ledcAttachPin(PIN_STEER_PUL, 0);
     
-    adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_12);
+    adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_11);
 
     digitalWrite(PIN_STEER_ENA, HIGH); 
     ledcWrite(0, 0);
@@ -62,17 +62,24 @@ uint16_t getMeasuredSteering() {
     uint32_t pot_mv = esp_adc_cal_raw_to_voltage(sum / 16, &adc_chars);
     int rawSteering = map(pot_mv, 0, 3300, 0, 1023);
 
-    // DISCONNECTION CHECK
-    if (rawSteering < 12 || rawSteering > 1010) {
-        smoothedSteering = (float)rawSteering;
+// DISCONNECTION CHECK (Updated to check raw mV)
+    if (pot_mv < 50 || pot_mv > 3200) { 
+        smoothedSteering = (float)STEER_POT_CENTER_MV;
         return COMM_STEER_CENTER;
     }
 
-    smoothedSteering = (STEER_EMA_ALPHA * (float)rawSteering)
+    // Clamp to calibrated range (handles 142mV ADC floor)
+    pot_mv = constrain(pot_mv, (uint32_t)STEER_POT_MIN_MV, (uint32_t)STEER_POT_MAX_MV);
+
+    // Apply EMA filter directly to the clamped mV value
+    smoothedSteering = (STEER_EMA_ALPHA * (float)pot_mv)
                      + ((1.0f - STEER_EMA_ALPHA) * smoothedSteering);
 
-    int raw_adc = (int)smoothedSteering;
-    int mapped_pos = map(raw_adc, 0, 1023, COMM_STEER_LEFT, COMM_STEER_RIGHT);
+    // Map from real measured endpoints to protocol range
+    int mapped_pos = map((long)smoothedSteering, 
+                         (long)STEER_POT_MIN_MV, (long)STEER_POT_MAX_MV, 
+                         (long)COMM_STEER_LEFT, (long)COMM_STEER_RIGHT);
+                         
     current_pos = (uint16_t)constrain(mapped_pos, COMM_STEER_LEFT, COMM_STEER_RIGHT);
 #endif
 
@@ -126,27 +133,26 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
         return;
     }
 
+    steeringPID.Compute();
+
     // Re-enter automatic cleanly when conditions allow
     if (steeringPID.GetMode() == (uint8_t)QuickPID::Control::manual) {
         steeringPID.SetMode(QuickPID::Control::automatic);
     }
 
-    steeringPID.Compute();
-
     // Deadband check
     if (fabsf(setpoint - input) < STEER_DEADZONE) {
         ledcWrite(0, 0);
-        digitalWrite(PIN_STEER_ENA, LOW);
+        digitalWrite(PIN_STEER_ENA, HIGH);
         s_last_freq_hz = -1; 
         return;
     }
 
    // --- HARDWARE ACTUATION ---
-    digitalWrite(PIN_STEER_ENA, LOW); 
+    digitalWrite(PIN_STEER_ENA, HIGH); 
 
     // FIX 10: anti-chatter band on direction flip — prevents rapid
     // direction reversals when output crosses zero.
-    static bool s_last_dir = false;
     bool dir;
     if (fabsf(output) < 5.0f) {
         dir = s_last_dir;
@@ -157,7 +163,7 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
 
     float effort = fabsf(output);
     if (effort < 1.0f) effort = 1.0f;
-    int step_frequency_hz = map((long)effort, 0, 255, 50, 2000);
+    int step_frequency_hz = map((long)effort, 0, 255, 50, STEPPER_MAX_HZ);
 
 #if SIMULATION_MODE
     updateSimulatedPhysics(step_frequency_hz, dir);

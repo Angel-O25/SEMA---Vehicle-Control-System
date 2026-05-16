@@ -19,25 +19,25 @@ void initDisplay() {
     display.setTextColor(SSD1306_WHITE); 
 }
 
-void updateDisplay(float rpm, uint16_t steer, DriveMode speedMode) {
+void updateDisplay(float rpm, uint16_t steer) {
     display.clearDisplay();
     display.setCursor(0,0);
     display.setTextSize(2);
     display.setTextSize(1);
     
-    display.print("\nRPM:   ");
+    display.print("\nSPEED:   ");
     display.println(rpm, 1);
     
     display.print("STEER: ");
     display.println(steer);
     
-    display.print("SPEED:  ");
+    display.print("THROTTLE:  ");
     if (isReverseEngaged()) {
         display.println("REVERSE"); 
     } else {
-        display.println(speedMode == DRIVE_LOW ? "LOW" : (speedMode == DRIVE_HIGH ? "HIGH" : "MED"));
+        display.println("FORWARD"); // Replaced the three-speed logic
     }
-    
+         
     if (currentState == MANUAL_STATE && getDMSHoldStartTime() > 0) {
         display.setCursor(0, 45);
         display.print("ENGAGING AUTO..."); 

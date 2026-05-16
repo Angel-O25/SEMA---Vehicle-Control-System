@@ -124,7 +124,7 @@ void updateStateMachine() {
             if (isDeadmanActive() && !isReverseEngaged()) {
                 s_signalLostTime = 0;
 
-                if (getANSCommandMode() == 1) {
+                if (getANSCommandMode() == 1 || getANSCommandMode() == 3) {
                     if (dmsStartTime == 0) {
                         dmsStartTime = millis();
                         vcs_log("DMS HELD: 1s countdown for AUTO...");
