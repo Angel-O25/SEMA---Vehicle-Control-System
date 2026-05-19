@@ -18,7 +18,7 @@
 // --- Switches (Digital Inputs) ---
 #define PIN_DMS_LEFT       33   // Active HIGH, INPUT_PULLDOWN in firmware
 #define PIN_DMS_RIGHT      27   // Active HIGH, INPUT_PULLDOWN in firmware
-#define PIN_LOWBRAKE_IN    14   // Brake switch, active HIGH, INPUT_PULLDOWN
+#define PIN_LOWBRAKE_IN    14   // Brake switch, ACTIVE LOW (pressed=LOW), INPUT_PULLDOWN
 #define PIN_LIMIT_SWITCH   13   // Brake actuator end-stop, active HIGH, INPUT_PULLDOWN
 #define PIN_REVERSE_IN     26   // Active LOW (latching toggle); 10k pull-up on PCB —
                                 // configure as plain INPUT, NOT INPUT_PULLUP/DOWN

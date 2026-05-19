@@ -60,7 +60,7 @@ void updateThrottle(float current_rpm_in, float target_rpm_in) {
     speedPID.SetOutputLimits(MIN_PWM_OUT, dynamic_max_pwm);
 
     // --- 1. HARDWARE SAFETY LOCKOUT ---
-    bool isBrakePressed = (digitalRead(PIN_LOWBRAKE_IN) == HIGH);
+    bool isBrakePressed = (digitalRead(PIN_LOWBRAKE_IN) == LOW);  // active LOW
 
     if ((currentState != AUTONOMOUS_STATE && currentState != MANUAL_STATE) || isBrakePressed) {
         current_pwm_duty = MIN_PWM_OUT;

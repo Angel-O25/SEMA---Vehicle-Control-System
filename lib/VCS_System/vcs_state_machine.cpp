@@ -156,24 +156,39 @@ void updateStateMachine() {
         }
 
         case AUTONOMOUS_STATE:
-            // Hard physical overrides → MANUAL
-            if (isThrottlePedalPressed() || !isDeadmanActive()) {
+            // Hard override: throttle pedal → MANUAL immediately (no grace)
+            if (isThrottlePedalPressed()) {
                 currentState = MANUAL_STATE;
-                vcs_log("SAFETY: physical override -> MANUAL");
+                vcs_log("SAFETY: throttle pedal -> MANUAL");
+            }
+            // Deadman released: 2s grace period before dropping to MANUAL.
+            // Prevents a momentary finger slip from aborting the run.
+            else if (!isDeadmanActive()) {
+                if (s_signalLostTime == 0) {
+                    s_signalLostTime = millis();
+                    vcs_log("DMS released — 2s grace started");
+                }
+                if (millis() - s_signalLostTime > 2000u) {
+                    currentState     = MANUAL_STATE;
+                    s_signalLostTime = 0;
+                    vcs_log("SAFETY: deadman released -> MANUAL");
+                }
+            } else {
+                // Deadman re-engaged: reset grace timer
+                s_signalLostTime = 0;
             }
             // Brake / stop-line → STOPPING
-            else if (isPhysicalBrakePressed() || (getTargetBrake() > 0)) {
+            if (currentState == AUTONOMOUS_STATE &&
+                (isPhysicalBrakePressed() || (getTargetBrake() > 10))) {
                 currentState      = STOPPING_STATE;
                 stoppingStartTime = millis();
                 vcs_log("FSM: brake / stop-line -> STOPPING");
             }
-            // Soft override (Jetson asked to exit AUTO)
-            else if (getANSCommandMode() == 2) {
+            // Jetson soft-exit
+            if (currentState == AUTONOMOUS_STATE && getANSCommandMode() == 2) {
                 currentState = MANUAL_STATE;
                 vcs_log("LINK: Jetson soft-exit -> MANUAL");
             }
-            // Note: heartbeat-loss → MANUAL is handled by the priority
-            // safety check above. Don't duplicate it here.
             break;
 
         case STOPPING_STATE:

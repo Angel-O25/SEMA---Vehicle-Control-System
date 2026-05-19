@@ -50,7 +50,7 @@ void updateHallCalculations() {
 
         // 2. Math for RPM
         float pulses_per_rev = (float)HALL_TRANSITIONS_PER_MECH_REV; 
-        pulses_per_rev *= GEAR_REDUCTION; 
+        // H4 fix: HALL_TRANSITIONS_PER_MECH_REV already = 46 (2x23). No GEAR_REDUCTION multiplier.
         
         if (pulses > 0) {
             current_rpm = ((float)pulses / pulses_per_rev) * (60000.0f / (float)elapsed);

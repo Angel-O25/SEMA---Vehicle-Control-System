@@ -62,7 +62,7 @@
 #define COMM_STEER_CENTER   500
 #define COMM_STEER_RIGHT    1000
 #define COMM_BRAKE_MIN      0
-#define COMM_BRAKE_MAX      1       // Binary: 0 = off, 1 = on
+#define COMM_BRAKE_MAX      100     // 0-100% matches Jetson protocol
 
 
 // ============================================================
@@ -79,7 +79,7 @@
 
 // --- Safety Timing Constants ---
 // (Candidate to relocate into vcs_constants.h.)
-#define DMS_HOLD_REQUIRED_MS         1000u         // SEM spec: 1.0 s dual-grip hold
+#define DMS_HOLD_REQUIRED_MS         3000u         // 3s hold for AUTONOMOUS entry
 
 // Jetson command timeout in autonomous mode.
 // Triggered when no valid UART packet arrives within

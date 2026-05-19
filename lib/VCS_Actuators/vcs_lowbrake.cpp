@@ -12,7 +12,7 @@ bool is_brake_pressed = false; //  Reflects the physical pedal state, debounced 
 
 // Debounce state for the pedal switch
 static uint32_t lastDebounceTime = 0;
-static int      lastButtonState  = LOW;   // INPUT_PULLDOWN -> idle reads LOW
+static int      lastButtonState  = HIGH;   // INPUT_PULLUP -> idle reads HIGH
 
 // Time-bounded retract state (no lower limit switch on the actuator)
 static bool     retracting           = false;
@@ -24,9 +24,9 @@ static void brake_actuator_retract();
 static void brake_actuator_coast();
 
 void initLowBrake() {
-    // Active HIGH inputs, no PCB pull resistors
-    pinMode(PIN_LOWBRAKE_IN,  INPUT_PULLDOWN);
-    pinMode(PIN_LIMIT_SWITCH, INPUT_PULLDOWN);
+    // Active LOW: pressed connects GPIO14 to GND (MC brake signal).
+    // INPUT_PULLUP idle = HIGH = brake appears released → fail-safe if wire disconnected.    pinMode(PIN_LOWBRAKE_IN,  INPUT_PULLUP);
+    pinMode(PIN_LIMIT_SWITCH, INPUT_PULLUP);
 
     // TB6612 actuator pins
     pinMode(TB6612_IN1_PIN, OUTPUT);
@@ -47,7 +47,7 @@ void initLowBrake() {
 void updateLowBrake() {
     // ------------------------------------------------------
     // 1. Debounced read of the physical brake switch
-    //    Pin is active HIGH with internal pull-down:
+    //    Pin is active LOW with internal pull-down:
     //    HIGH == pressed, LOW == released.
     // ------------------------------------------------------
     int reading = digitalRead(PIN_LOWBRAKE_IN);
@@ -55,7 +55,10 @@ void updateLowBrake() {
         lastDebounceTime = millis();
     }
     if ((millis() - lastDebounceTime) > DEBOUNCE_TIME_MS) {
-        is_brake_pressed = (reading == HIGH);
+        // Active LOW: switch pressed connects GPIO14 to GND (or MC brake signal goes LOW).
+        // INPUT_PULLUP idle = HIGH = brake appears released → fail-safe if wire disconnected.
+        // MC brake signal LOW = brake active → is_brake_pressed = true.
+        is_brake_pressed = (reading == LOW);
     }
     lastButtonState = reading;
 
@@ -85,14 +88,14 @@ void updateLowBrake() {
     static bool extending = false;
 
     // When forceBrakeEngagement(true) starts an extend:
-    if (!extending && digitalRead(PIN_LIMIT_SWITCH) != HIGH) {
+    if (!extending && digitalRead(PIN_LIMIT_SWITCH) != LOW) {
         brake_actuator_extend();
         extend_started_ms = millis();
         extending = true;
     }
 
     if (extending) {
-        if (digitalRead(PIN_LIMIT_SWITCH) == HIGH ||
+        if (digitalRead(PIN_LIMIT_SWITCH) == LOW ||
             (millis() - extend_started_ms) >= BRAKE_EXTEND_TIMEOUT_MS) {
             brake_actuator_coast();
             extending = false;
@@ -106,7 +109,7 @@ void forceBrakeEngagement(bool engage) {
         digitalWrite(BRAKE_MC_PIN, LOW);
 
         // Extend actuator until limit switch trips
-        if (digitalRead(PIN_LIMIT_SWITCH) == HIGH) {
+        if (digitalRead(PIN_LIMIT_SWITCH) == LOW) {
             // Already at full extension — coast & hold
             brake_actuator_coast();
         } else {

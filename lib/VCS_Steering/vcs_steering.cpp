@@ -105,27 +105,16 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     input    = (float)getMeasuredSteering();
     setpoint = (float)target_position;
 
-    // --- SAFETY LOCKOUT (renamed from misleading "SECURITY OVERRIDE") ---
+    // --- SAFETY LOCKOUT — manual mode, human steers ---
     if (!is_automatic) {
-        digitalWrite(PIN_STEER_ENA, HIGH); 
+        // LOW = motor disabled = shaft free for human steering
+        // (HIGH = enabled = motor holds position, blocking human input)
+        digitalWrite(PIN_STEER_ENA, LOW);
         ledcWrite(0, 0);
-        s_last_freq_hz = -1; 
+        s_last_freq_hz = -1;
 
-        if (fabsf(output) < 5.0f) {
-        dir = s_last_dir;
-    } else {
-        dir = (output > 0);
-    }
-
-    // Before changing direction in updateSteeringPID():
-    if (dir != s_last_dir) {
-        digitalWrite(PIN_STEER_DIR, dir ? HIGH : LOW);
-        delayMicroseconds(STEER_DM542_DIR_SETUP_US);   // 5µs from cal
-    }
-
-        // FIX 2: clear PID state on transition out of automatic.
-        // Without this, the integral persists into the next autonomous
-        // entry and the steering motor jolts.
+        // Clear PID state so the integral does not jolt the motor
+        // when autonomous mode is next entered.
         if (steeringPID.GetMode() != (uint8_t)QuickPID::Control::manual) {
             steeringPID.SetMode(QuickPID::Control::manual);
             steeringPID.Initialize();

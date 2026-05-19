@@ -18,14 +18,14 @@ static const uint8_t DEBOUNCE_TICKS = 3;
 void initDeadman() {
     // Active HIGH, no PCB pull resistor — internal pull-down keeps the
     // line at LOW when the switch is open.
-    pinMode(PIN_DMS_LEFT,  INPUT_PULLDOWN);
-    pinMode(PIN_DMS_RIGHT, INPUT_PULLDOWN);
+    pinMode(PIN_DMS_LEFT,  INPUT_PULLUP);
+    pinMode(PIN_DMS_RIGHT, INPUT_PULLUP);
 }
 
 void updateDeadman() {
     // HIGH = pressed (switch ties GPIO to 3.3V)
-    bool rawLeft  = (digitalRead(PIN_DMS_LEFT)  == HIGH);
-    bool rawRight = (digitalRead(PIN_DMS_RIGHT) == HIGH);
+    bool rawLeft  = (digitalRead(PIN_DMS_LEFT)  == LOW);
+    bool rawRight = (digitalRead(PIN_DMS_RIGHT) == LOW);
 
     // Saturating up/down counters per channel
     static uint8_t leftCounter  = 0;
@@ -44,5 +44,5 @@ void updateDeadman() {
 }
 
 bool isDeadmanActive() {
-    return true;
+    return autoStateRequested;
 }
