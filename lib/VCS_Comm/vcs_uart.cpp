@@ -399,11 +399,11 @@ void printHexDebug(const char* prefix, const uint8_t* data, uint8_t length) {
     }
     Serial.println();
     Serial.printf("[TX decoded] RPM:%d Steer:%d State:%d Speed:%d Rev:%d\n",
-        (int16_t)((tx_buf[4]<<8)|tx_buf[5]),   // RPM
-        (uint16_t)((tx_buf[6]<<8)|tx_buf[7]),  // Steer
-        tx_buf[8],                              // State
-        tx_buf[9],                              // Speed
-        tx_buf[10]                              // Reverse
+        (int16_t)((data[4]<<8)|data[5]),   // RPM
+        (uint16_t)((data[6]<<8)|data[7]),  // Steer
+        data[8],                              // State
+        data[9],                              // Speed
+        data[10]                              // Reverse
     );
 }
 
