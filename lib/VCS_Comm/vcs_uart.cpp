@@ -398,12 +398,12 @@ void printHexDebug(const char* prefix, const uint8_t* data, uint8_t length) {
         Serial.print(" ");
     }
     Serial.println();
-    Serial.printf("[TX decoded] RPM:%d Steer:%d State:%d Speed:%d Rev:%d\n",
-        (int16_t)((data[4]<<8)|data[5]),   // RPM
-        (uint16_t)((data[6]<<8)|data[7]),  // Steer
-        data[8],                              // State
-        data[9],                              // Speed
-        data[10]                              // Reverse
+    Serial.printf("[TX decoded] Mode:%d RPM:%d Steer:%d Brake:%d Rev:%d\n",
+        data[2],
+        (int16_t)((data[3] << 8) | data[4]),
+        (uint16_t)((data[5] << 8) | data[6]),
+        data[7],
+        data[8]
     );
 }
 
