@@ -45,11 +45,11 @@ static constexpr bool UART_DEBUG_LOGS = true;
 //   [9]=Brake [10]=Reverse
 //   [11]=CRC_H [12]=CRC_L [13]=FF
 //
-// TX (ESP32 -> Jetson, msg type 0x02):
+//   TX (ESP32 -> Jetson, msg type 0x02):
 //   [0]=AA [1]=55 [2]=02 [3]=07
-//   [4]=RPM_H [5]=RPM_L
-//   [6]=Steer_H [7]=Steer_L
-//   [8]=State [9]=Gear [10]=Reverse
+//   [4]=MODE [5]=RPM_H [6]=RPM_L
+//   [7]=Steer_H [8]=Steer_L
+//   [9]=Brake [10]=Reverse
 //   [11]=CRC_H [12]=CRC_L [13]=FF
 //
 // CRC16 polynomial 0xA001, init 0xFFFF, computed over bytes 2..10
@@ -352,17 +352,15 @@ uint8_t getTargetBrake() {
 }
 
 bool getANSReverseCommand() {
-    /*
     portENTER_CRITICAL(&uartMux);
     bool v = target_direction_reverse;
     portEXIT_CRITICAL(&uartMux);
     return v;
-    */
-   return true;
+    
+   //return true;
 }
 
 bool ansHeartbeatReceived() {
-    /*
     portENTER_CRITICAL(&uartMux);
     uint32_t t = last_valid_packet_time;
     portEXIT_CRITICAL(&uartMux);
@@ -371,8 +369,7 @@ bool ansHeartbeatReceived() {
     // true falsely without this guard.
     if (t == 0) return false;
     return (millis() - t) <= 500;
-    */
-   return true;
+   //return true;
 }
 
 // FIX #9: isJetsonStopLineActive() removed.
@@ -398,12 +395,13 @@ void printHexDebug(const char* prefix, const uint8_t* data, uint8_t length) {
         Serial.print(" ");
     }
     Serial.println();
+    // data is the full 14-byte frame, MODE starts at index 4
     Serial.printf("[TX decoded] Mode:%d RPM:%d Steer:%d Brake:%d Rev:%d\n",
-        data[2],
-        (int16_t)((data[3] << 8) | data[4]),
-        (uint16_t)((data[5] << 8) | data[6]),
-        data[7],
-        data[8]
+        data[4],
+        (int16_t)((data[5] << 8) | data[6]),
+        (uint16_t)((data[7] << 8) | data[8]),
+        data[9],
+        data[10]
     );
 }
 
