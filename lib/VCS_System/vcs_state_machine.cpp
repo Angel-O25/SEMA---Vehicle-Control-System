@@ -121,7 +121,7 @@ void updateStateMachine() {
             break;
 
         case MANUAL_STATE: {
-            if (isDeadmanActive() && !isReverseEngaged()) {
+            if (isDeadmanActive()) {
                 s_signalLostTime = 0;
 
                 if (getANSCommandMode() == 1 || getANSCommandMode() == 3) {

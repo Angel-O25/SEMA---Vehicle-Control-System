@@ -32,6 +32,7 @@
 #include "vcs_pins.h"
 #include "vcs_reverse.h"
 #include "vcs_web.h"
+#include "vcs_deadman.h" 
 
 static constexpr bool UART_DEBUG_LOGS = true;
 
@@ -255,7 +256,8 @@ void broadcastVehicleTelemetry(uint8_t gear) {
 
     // Reverse encoded as bitfield: bit 0 = reverse, bit 1 = horn (reserved),
     // bits 2-7 reserved per spec.
-    uint8_t revField = isReverseEngaged() ? 0x01 : 0x00;
+    uint8_t revField = (isReverseEngaged() ? 0x01 : 0x00)
+                 | (isDeadmanActive()  ? 0x02 : 0x00);   // bit 1 = deadmans held
 
 #if SIMULATION_MODE
     rpm   = getSimulatedRPM();
