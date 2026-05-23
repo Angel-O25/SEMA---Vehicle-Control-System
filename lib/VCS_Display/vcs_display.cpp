@@ -3,12 +3,11 @@
 #include "vcs_lowbrake.h"
 #include "vcs_reverse.h"
 #include "vcs_constants.h"
+#include "vcs_communication.h"   // getANSCommandMode()
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 
 // SH1106 chip (128x64, I2C addr 0x3C).
-// NOTE: The display physically looks like an SSD1306 but uses a different
-// internal RAM offset. Using SSD1306 driver causes grainy static output.
 Adafruit_SH1106G display(128, 64, &Wire, -1);
 
 static bool s_display_ok = false;
@@ -27,7 +26,7 @@ void initDisplay() {
     display.setTextColor(SH110X_WHITE);
     display.setTextSize(1);
 
-    // Splash — Jetson takes ~30s to boot, fill that time.
+    // Splash screen
     display.setCursor(20, 10);
     display.setTextSize(2);
     display.println(F("SIDLAK 2"));
@@ -39,26 +38,41 @@ void initDisplay() {
     display.display();
 }
 
-// Maps VcsState to a short status string for the OLED.
-static const char* stateLabel(VcsState s) {
+// VCS state → short label
+static const char* vcsStateLabel(VcsState s) {
     switch (s) {
         case INIT_STATE:       return "INIT";
         case IDLE_STATE:       return "IDLE";
         case MANUAL_STATE:     return "MANUAL";
-        case AUTONOMOUS_STATE: return "AUTONOMOUS";
+        case AUTONOMOUS_STATE: return "AUTO";
         case STOPPING_STATE:   return "STOPPING";
-        default:               return "UNKNOWN";
+        default:               return "?";
     }
 }
 
-// ─── Layout (128 x 64 px, 6px per char at textSize=1) ─────────────────
-//  Row 0  y= 0  STATE   label + value
-//  Row 1  y=14  RPM     label + value
-//  Row 2  y=28  STEER   label + value (raw mV)
-//  Row 3  y=42  BRAKE   label + state + "  REV:" + state
-//  Divider line at y=52
-//  Row 4  y=55  small   "SEM 2026  PH0017003"
-// ───────────────────────────────────────────────────────────────────────
+// Jetson MODE byte → short label  (see UART protocol doc)
+// 0=IDLE 1=AUTO 2=MANUAL 3=STOPPING 4=REV_RCVR 5=FAULT 6=ESTOP
+static const char* jetsonModeLabel(uint8_t mode) {
+    switch (mode) {
+        case 0: return "IDLE";
+        case 1: return "AUTO";
+        case 2: return "MANUAL";
+        case 3: return "STOPPING";
+        case 4: return "REV_RCVR";
+        case 5: return "FAULT";
+        case 6: return "ESTOP";
+        default: return "?";
+    }
+}
+
+// ─── OLED Layout (128 x 64 px, textSize=1 → 6×8 px per char) ──────────
+//  y= 0   VCS: <state>    JETSON: <mode>
+//  y=13   RPM: <rpm>
+//  y=26   STR: <steer> / 1000
+//  y=39   BRK: ON/OFF   REV: ON/OFF
+//  ─────────────────────── divider y=51
+//  y=55   SEM2026  PH0017003
+// ────────────────────────────────────────────────────────────────────────
 void updateDisplay(float rpm, uint16_t steer_comm) {
     if (!s_display_ok) return;
 
@@ -66,35 +80,41 @@ void updateDisplay(float rpm, uint16_t steer_comm) {
     display.setTextColor(SH110X_WHITE);
     display.setTextSize(1);
 
-    // ── Row 0: State ────────────────────────────────────────────────
+    // ── Row 0: VCS state + Jetson mode ──────────────────────────────
     display.setCursor(0, 0);
-    display.print(F("STATE: "));
-    display.println(stateLabel(currentState));
+    display.print(F("VCS:"));
+    display.print(vcsStateLabel(currentState));
+
+    // Right-align Jetson mode label
+    // "JET:" + up to 8 chars — starts at x=68 to stay within 128px
+    display.setCursor(68, 0);
+    display.print(F("JET:"));
+    display.print(jetsonModeLabel(getANSCommandMode()));
 
     // ── Row 1: RPM ──────────────────────────────────────────────────
-    display.setCursor(0, 14);
-    display.print(F("RPM:   "));
+    display.setCursor(0, 13);
+    display.print(F("RPM:  "));
     display.println((int)rpm);
 
-    // ── Row 2: Steering position (COMM units 0-1000) ────────────────
-    display.setCursor(0, 28);
-    display.print(F("STEER: "));
+    // ── Row 2: Steering ─────────────────────────────────────────────
+    display.setCursor(0, 26);
+    display.print(F("STR:  "));
     display.print(steer_comm);
     display.print(F(" / 1000"));
 
     // ── Row 3: Brake + Reverse ──────────────────────────────────────
-    display.setCursor(0, 42);
+    display.setCursor(0, 39);
     display.print(F("BRK:"));
     display.print(isPhysicalBrakePressed() ? F("ON ") : F("OFF"));
-    display.print(F("  REV:"));
+    display.print(F("   REV:"));
     display.print(isReverseEngaged()       ? F("ON")  : F("OFF"));
 
     // ── Divider ─────────────────────────────────────────────────────
-    display.drawFastHLine(0, 53, 128, SH110X_WHITE);
+    display.drawFastHLine(0, 51, 128, SH110X_WHITE);
 
     // ── Footer ──────────────────────────────────────────────────────
-    display.setCursor(0, 56);
-    display.print(F("SEM2026 PH0017003"));
+    display.setCursor(0, 55);
+    display.print(F("SEM2026  PH0017003"));
 
     display.display();
 }

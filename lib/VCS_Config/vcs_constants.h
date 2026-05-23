@@ -79,7 +79,7 @@
 
 // --- Safety Timing Constants ---
 // (Candidate to relocate into vcs_constants.h.)
-#define DMS_HOLD_REQUIRED_MS         3000u         // 3s hold for AUTONOMOUS entry
+#define DMS_HOLD_REQUIRED_MS         1000u         // 1s confirm for AUTONOMOUS entry
 
 // Jetson command timeout in autonomous mode.
 // Triggered when no valid UART packet arrives within

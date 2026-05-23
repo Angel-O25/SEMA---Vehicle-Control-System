@@ -1,32 +1,24 @@
 // ============================================================
-//  vcs_state_machine.cpp — Option A revision
+//  vcs_state_machine.cpp
 //
-//  CHANGES FROM PREVIOUS REVISION:
+//  States: INIT → IDLE → MANUAL ↔ AUTONOMOUS
+//  STOPPING_STATE removed — Jetson mission_fsm handles all
+//  stop-line timing. VCS stays in AUTONOMOUS and physically
+//  brakes when Jetson sends getTargetBrake() > 0. No VCS-side
+//  timer duplicates the Jetson's 3s stop-line dwell.
 //
-//  • FAULT_STATE removed entirely. The watchdog timer (configured in
-//    main.cpp) handles task hangs. Recoverable soft faults — UART CRC,
-//    heartbeat loss while autonomous, sensor dropouts — now demote the
-//    FSM to MANUAL_STATE instead of locking it in FAULT.
-//    Driver retakes control immediately, no actuator glitch.
+//  MANUAL → AUTONOMOUS entry:
+//    Jetson sends mode=1 AND no throttle AND no physical brake
+//    → DMS_HOLD_REQUIRED_MS (1s) confirm → AUTONOMOUS
+//    Deadman hold NOT required for entry (Jetson handles that gate)
 //
-//  • requestSoftwareEstop() / isEstopLatched() / s_estopLatched removed.
-//    No software E-stop button is wired to the ESP32. The hardware
-//    E-stop (if present) bypasses the embedded system on the power bus.
-//
-//  • triggerFault / getSystemFaults / clearFault / clearAllFaults retained
-//    for telemetry visibility. Jetson dashboard can still show which
-//    fault bits are active even though they no longer drive a dedicated
-//    FAULT state.
-//
-//  • getSystemFaults() deadlock fixed — previous version took the mutex
-//    but never released it, so the second caller hung forever.
-//    triggerFault / clearFault / clearAllFaults now also mutex-protected
-//    for consistency.
-//
-//  • Hall ISR detach removed from state-entry actions. Previously the
-//    ISR detached on FAULT_STATE entry; with FAULT_STATE gone, the
-//    ISR stays attached across the lifetime of the firmware after the
-//    initial INIT -> IDLE transition.
+//  AUTONOMOUS exit conditions:
+//    - Throttle pedal pressed          → MANUAL immediately
+//    - Physical brake switch pressed   → MANUAL immediately
+//    - Deadman released                → 2s grace → MANUAL
+//    - Jetson sends mode=0 or mode=2   → MANUAL
+//    - Link lost (heartbeat timeout)   → MANUAL
+//    - System fault                    → MANUAL
 // ============================================================
 
 #include "vcs_state_machine.h"
@@ -41,19 +33,17 @@
 #include "vcs_steering.h"
 #include "vcs_constants.h"
 
-// Hall ISR attach/detach lives in vcs_hallsensor.cpp
 extern void hall_interrupts_attach();
-extern void hall_interrupts_detach();
-
-// Brake helper lives in vcs_lowbrake.cpp / vcs_relays.cpp
 extern void forceBrakeEngagement(bool engage);
 
-// Fault register — protected by faultMux for thread-safe access from any task.
+// Throttle ADC value — defined in vcs_throttle.cpp
+extern uint16_t current_throttle_adc;
+
 static portMUX_TYPE faultMux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t     g_systemFaults = 0;
 
-// File-scope statics for MANUAL_STATE timer logic.
-static uint32_t s_signalLostTime = 0;
+// Shared grace-period timer (reused across states)
+static uint32_t s_graceStartTime = 0;
 static uint32_t s_lastLogTime    = 0;
 
 // =========================================================
@@ -61,7 +51,7 @@ static uint32_t s_lastLogTime    = 0;
 // =========================================================
 VcsState currentState      = INIT_STATE;
 uint32_t dmsStartTime      = 0;
-uint32_t stoppingStartTime = 0;
+uint32_t stoppingStartTime = 0;   // retained for API compat, unused
 
 // =========================================================
 // INIT
@@ -70,7 +60,7 @@ void initState_Machine() {
     currentState      = INIT_STATE;
     dmsStartTime      = 0;
     stoppingStartTime = 0;
-    s_signalLostTime  = 0;
+    s_graceStartTime  = 0;
     s_lastLogTime     = 0;
 
     portENTER_CRITICAL(&faultMux);
@@ -85,144 +75,168 @@ void updateStateMachine() {
     static VcsState lastState = INIT_STATE;
 
     // ---------------------------------------------------------
-    // 1. PRIORITY SAFETY OVERRIDES
-    //
-    //    Option A behaviour: any active fault OR heartbeat loss
-    //    while AUTONOMOUS demotes the FSM to MANUAL.
-    //    No FAULT_STATE — driver takes over immediately.
-    //
-    //    Faults during MANUAL/IDLE/STOPPING are non-fatal; they
-    //    are visible in telemetry but do not force a state change.
+    // PRIORITY SAFETY OVERRIDES — checked every tick
     // ---------------------------------------------------------
     if (currentState == AUTONOMOUS_STATE) {
         uint32_t faults = getSystemFaults();
         bool linkLost   = !ansHeartbeatReceived();
-
         if (faults != VCS_FAULT_NONE || linkLost) {
-            currentState = MANUAL_STATE;
-            vcs_log(linkLost ? "LINK lost in AUTO -> MANUAL"
-                              : "FAULT detected in AUTO -> MANUAL");
+            currentState     = MANUAL_STATE;
+            s_graceStartTime = 0;
+            vcs_log(linkLost ? "LINK lost -> MANUAL" : "FAULT -> MANUAL");
         }
     }
 
     // ---------------------------------------------------------
-    // 2. STATE TRANSITION LOGIC
+    // STATE TRANSITIONS
     // ---------------------------------------------------------
     switch (currentState) {
 
+        // ── INIT ─────────────────────────────────────────────
         case INIT_STATE:
             if (millis() > 2000) currentState = IDLE_STATE;
             break;
 
+        // ── IDLE ─────────────────────────────────────────────
         case IDLE_STATE:
-            // ESP32 owns the car. Once init completes, default to MANUAL —
-            // a human driver doesn't need the Jetson up to drive.
             currentState = MANUAL_STATE;
             break;
 
+        // ── MANUAL ───────────────────────────────────────────
         case MANUAL_STATE: {
-            if (isDeadmanActive()) {
-                s_signalLostTime = 0;
+            bool jetsonWantsAuto  = (getANSCommandMode() == 1 ||
+                                     getANSCommandMode() == 3);
+            bool driverInputActive = isThrottlePedalPressed() ||
+                                     isPhysicalBrakePressed();
 
-                if (getANSCommandMode() == 1 || getANSCommandMode() == 3) {
-                    if (dmsStartTime == 0) {
-                        dmsStartTime = millis();
-                        vcs_log("DMS HELD: 1s countdown for AUTO...");
-                    }
-                    if (millis() - dmsStartTime > DMS_HOLD_REQUIRED_MS) {
-                        currentState = AUTONOMOUS_STATE;
-                        dmsStartTime = 0;
-                        vcs_log("FSM: -> AUTONOMOUS");
-                    }
-                } else {
-                    if (millis() - s_lastLogTime >= 2000) {
-                        vcs_log("WAITING: Jetson must send AUTO (mode=1)");
-                        s_lastLogTime = millis();
-                    }
+            // ── DEBUG: print entry condition values every 2s ──────────
+            {
+                static uint32_t lastDbg = 0;
+                if (millis() - lastDbg > 2000) {
+                    lastDbg = millis();
+                    Serial.printf(
+                        "[AUTO_ENTRY] dms=%d mode=%d throttle_raw=%u throttle_pressed=%d "
+                        "brake_pressed=%d jetsonAuto=%d driverInput=%d\n",
+                        (int)isDeadmanActive(),
+                        (int)getANSCommandMode(),
+                        (unsigned)current_throttle_adc,
+                        (int)isThrottlePedalPressed(),
+                        (int)isPhysicalBrakePressed(),
+                        (int)jetsonWantsAuto,
+                        (int)driverInputActive
+                    );
+                }
+            }
+
+            if (isDeadmanActive() && jetsonWantsAuto && !driverInputActive) {
+                if (dmsStartTime == 0) {
+                    dmsStartTime = millis();
+                    vcs_log("AUTO: DMS held + Jetson ready — countdown started");
+                }
+                if (millis() - dmsStartTime > DMS_HOLD_REQUIRED_MS) {
+                    currentState     = AUTONOMOUS_STATE;
+                    dmsStartTime     = 0;
+                    s_graceStartTime = 0;
+                    vcs_log("FSM: -> AUTONOMOUS");
                 }
             } else {
-                // 50ms grace period to prevent switch bounce resetting timer
                 if (dmsStartTime != 0) {
-                    if (s_signalLostTime == 0) s_signalLostTime = millis();
-                    if (millis() - s_signalLostTime > 50) {
-                        dmsStartTime     = 0;
-                        s_signalLostTime = 0;
-                    }
-                } else {
-                    s_signalLostTime = 0;
+                    dmsStartTime = 0;
+                    if (driverInputActive) vcs_log("Driver input: countdown reset");
+                }
+                if (!jetsonWantsAuto && millis() - s_lastLogTime >= 2000) {
+                    vcs_log("WAITING: Jetson must send AUTO (mode=1)");
+                    s_lastLogTime = millis();
                 }
             }
             break;
         }
 
-        case AUTONOMOUS_STATE:
-            // Hard override: throttle pedal → MANUAL immediately (no grace)
-            if (isThrottlePedalPressed()) {
-                currentState = MANUAL_STATE;
-                vcs_log("SAFETY: throttle pedal -> MANUAL");
+        // ── AUTONOMOUS ───────────────────────────────────────
+        case AUTONOMOUS_STATE: {
+
+            // ── DEBUG: print exit condition values every 2s ──────────
+            {
+                static uint32_t lastDbg2 = 0;
+                if (millis() - lastDbg2 > 2000) {
+                    lastDbg2 = millis();
+                    Serial.printf(
+                        "[AUTO_EXIT_CHECK] throttle_raw=%u throttle=%d brake=%d "
+                        "dms=%d mode=%d grace=%lums\n",
+                        (unsigned)current_throttle_adc,
+                        (int)isThrottlePedalPressed(),
+                        (int)isPhysicalBrakePressed(),
+                        (int)isDeadmanActive(),
+                        (int)getANSCommandMode(),
+                        s_graceStartTime ? (unsigned long)(millis() - s_graceStartTime) : 0UL
+                    );
+                }
             }
-            // Deadman released: 2s grace period before dropping to MANUAL.
-            // Prevents a momentary finger slip from aborting the run.
-            else if (!isDeadmanActive()) {
-                if (s_signalLostTime == 0) {
-                    s_signalLostTime = millis();
+
+            // 1. Throttle pedal → MANUAL immediately (no grace)
+            if (isThrottlePedalPressed()) {
+                currentState     = MANUAL_STATE;
+                s_graceStartTime = 0;
+                vcs_log("SAFETY: throttle pedal -> MANUAL");
+                break;
+            }
+
+            // 2. Physical brake switch → MANUAL immediately
+            //    (driver is physically braking = takeover)
+            //    Note: Jetson brake COMMAND (getTargetBrake() > 0) does NOT
+            //    change FSM state — it only actuates the brake hardware.
+            //    Stop-line timing is handled by Jetson mission_fsm.
+            if (isPhysicalBrakePressed()) {
+                currentState     = MANUAL_STATE;
+                s_graceStartTime = 0;
+                vcs_log("SAFETY: brake switch -> MANUAL");
+                break;
+            }
+
+            // 3. Deadman released → 2s grace → MANUAL
+            if (!isDeadmanActive()) {
+                if (s_graceStartTime == 0) {
+                    s_graceStartTime = millis();
                     vcs_log("DMS released — 2s grace started");
                 }
-                if (millis() - s_signalLostTime > 2000u) {
+                if (millis() - s_graceStartTime > 2000u) {
                     currentState     = MANUAL_STATE;
-                    s_signalLostTime = 0;
+                    s_graceStartTime = 0;
                     vcs_log("SAFETY: deadman released -> MANUAL");
                 }
             } else {
-                // Deadman re-engaged: reset grace timer
-                s_signalLostTime = 0;
+                s_graceStartTime = 0;   // re-held: reset grace timer
             }
-            // Brake / stop-line → STOPPING
-            if (currentState == AUTONOMOUS_STATE &&
-                (isPhysicalBrakePressed() || (getTargetBrake() > 10))) {
-                currentState      = STOPPING_STATE;
-                stoppingStartTime = millis();
-                vcs_log("FSM: brake / stop-line -> STOPPING");
-            }
-            // Jetson soft-exit
+
+            // 4. Jetson explicit soft-exit (mode=2 only).
+            //    mode=0 (IDLE) is transient during FSM state changes — do NOT
+            //    exit on mode=0 or the VCS oscillates when Jetson briefly idles.
             if (currentState == AUTONOMOUS_STATE && getANSCommandMode() == 2) {
-                currentState = MANUAL_STATE;
-                vcs_log("LINK: Jetson soft-exit -> MANUAL");
+                currentState     = MANUAL_STATE;
+                s_graceStartTime = 0;
+                vcs_log("LINK: Jetson sent MANUAL -> exiting AUTONOMOUS");
             }
             break;
+        }
 
-        case STOPPING_STATE:
-            // 3 s elapsed and stop-line cleared → resume AUTONOMOUS
-            if ((millis() - stoppingStartTime >= 3000) && !(getTargetBrake() > 0)) {
-                currentState = AUTONOMOUS_STATE;
-                vcs_log("FSM: stop cleared -> AUTONOMOUS");
-            }
-            // Driver intervention during stop → MANUAL
-            else if (!isDeadmanActive() || isThrottlePedalPressed()) {
-                currentState = MANUAL_STATE;
-                vcs_log("SAFETY: override during STOPPING -> MANUAL");
-            }
+        // STOPPING_STATE intentionally removed.
+        // Brake actuation in AUTONOMOUS follows getTargetBrake() in the
+        // brake task directly — no FSM state change needed for stop lines.
+
+        default:
             break;
     }
 
     // ---------------------------------------------------------
-    // 3. ENTRY ACTIONS (run once per state change)
+    // ENTRY ACTIONS (run once per state change)
     // ---------------------------------------------------------
     if (currentState != lastState) {
-
-        // Engage brake whenever we leave a driving state
         if (!isDrivingState()) {
             forceBrakeEngagement(true);
         }
-
-        // Hall ISR management:
-        //   - Attach the first time we leave INIT (MC is up by now).
-        //   - No detach on fault — FAULT_STATE no longer exists,
-        //     and we want continuous RPM data even during MANUAL.
         if (currentState == IDLE_STATE && lastState == INIT_STATE) {
             hall_interrupts_attach();
         }
-
         Serial.print(F("VCS_STATE_MACHINE: -> "));
         Serial.println(getStateName(currentState));
         lastState = currentState;
@@ -230,8 +244,7 @@ void updateStateMachine() {
 }
 
 // =========================================================
-// FAULT MANAGEMENT (telemetry only — does not drive FSM state)
-// All accesses mutex-protected so any task can read/write safely.
+// FAULT MANAGEMENT
 // =========================================================
 uint32_t getSystemFaults() {
     portENTER_CRITICAL(&faultMux);
@@ -267,7 +280,7 @@ const char* getStateName(VcsState state) {
         case IDLE_STATE:       return "IDLE";
         case MANUAL_STATE:     return "MANUAL";
         case AUTONOMOUS_STATE: return "AUTONOMOUS";
-        case STOPPING_STATE:   return "STOPPING";
+        case STOPPING_STATE:   return "STOPPING";  // kept for API compat
         default:               return "UNKNOWN";
     }
 }
