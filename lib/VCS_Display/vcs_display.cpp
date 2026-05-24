@@ -3,7 +3,7 @@
 #include "vcs_lowbrake.h"
 #include "vcs_reverse.h"
 #include "vcs_constants.h"
-#include "vcs_communication.h"   // getANSCommandMode()
+extern uint8_t getANSCommandMode();   // from vcs_communication / vcs_uart
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 
