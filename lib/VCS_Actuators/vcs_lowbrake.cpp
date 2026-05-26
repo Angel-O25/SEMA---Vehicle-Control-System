@@ -67,9 +67,12 @@ void updateLowBrake() {
     // ------------------------------------------------------
     if (is_brake_pressed) {
         forceBrakeEngagement(true);
-    } else if (currentState == MANUAL_STATE || currentState == AUTONOMOUS_STATE) {
-        // Only release while the FSM says we're in a driving state.
-        // FAULT / STOPPING / INIT / IDLE all keep the brake on.
+    } else if (currentState == MANUAL_STATE  ||
+               currentState == AUTONOMOUS_STATE ||
+               currentState == IDLE_STATE) {
+        // MANUAL / AUTONOMOUS: normal driving — brake follows pedal only.
+        // IDLE: retraction was started on entry; this prevents
+        //       updateLowBrake from immediately re-engaging during retract.
         forceBrakeEngagement(false);
     }
 

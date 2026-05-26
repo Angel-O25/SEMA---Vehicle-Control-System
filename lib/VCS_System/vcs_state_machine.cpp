@@ -45,6 +45,9 @@ static uint32_t     g_systemFaults = 0;
 // Shared grace-period timer (reused across states)
 static uint32_t s_graceStartTime = 0;
 static uint32_t s_lastLogTime    = 0;
+// IDLE brake-clear timer — tracks when IDLE was entered so we can
+// wait for the actuator to fully retract before accepting input.
+static uint32_t s_idleEntryMs    = 0;
 
 // =========================================================
 // Global state
@@ -93,14 +96,84 @@ void updateStateMachine() {
     switch (currentState) {
 
         // ── INIT ─────────────────────────────────────────────
-        case INIT_STATE:
-            if (millis() > 2000) currentState = IDLE_STATE;
+        // ── INIT ─────────────────────────────────────────────
+        // Brakes ON. Wait for minimum boot time, then accept a
+        // DMS press to signal driver is seated → IDLE.
+        case INIT_STATE: {
+            static bool s_dms_seen = false;
+            if (isDeadmanActive()) s_dms_seen = true;   // latch: brief press is enough
+
+            if (millis() > 2000 && s_dms_seen) {
+                currentState = IDLE_STATE;
+                s_dms_seen   = false;
+                vcs_log("INIT: driver present -> IDLE");
+            }
+            if (millis() > 2000 && millis() - s_lastLogTime > 3000) {
+                vcs_log("INIT: press deadman to proceed");
+                s_lastLogTime = millis();
+            }
             break;
+        }
 
         // ── IDLE ─────────────────────────────────────────────
-        case IDLE_STATE:
-            currentState = MANUAL_STATE;
+        // Brakes are retracting. Nothing moves until actuator is
+        // fully clear (BRAKE_RETRACT_MS + 200ms buffer).
+        // After brakes clear:
+        //   - throttle pedal OR brake button → MANUAL
+        //   - DMS hold + Jetson AUTO → AUTONOMOUS countdown
+        // No DMS required in MANUAL mode — DMS is only for AUTO.
+        case IDLE_STATE: {
+            const uint32_t BRAKE_CLEAR_MS = BRAKE_RETRACT_MS + 200u;
+            bool brakes_clear = (s_idleEntryMs > 0) &&
+                                 (millis() - s_idleEntryMs >= BRAKE_CLEAR_MS);
+
+            if (!brakes_clear) {
+                // Still retracting — log progress, block all transitions
+                if (millis() - s_lastLogTime > 500) {
+                    uint32_t remaining = BRAKE_CLEAR_MS -
+                                         (millis() - s_idleEntryMs);
+                    Serial.printf("[IDLE] Brakes retracting... %lums remaining\n",
+                                  (unsigned long)remaining);
+                    s_lastLogTime = millis();
+                }
+                break;
+            }
+
+            // Brakes fully clear — log once
+            static bool s_idle_ready_logged = false;
+            if (!s_idle_ready_logged) {
+                vcs_log("IDLE: brakes clear — ready (throttle=MANUAL, DMS+AUTO=AUTONOMOUS)");
+                s_idle_ready_logged = true;
+            }
+
+            // Driver input → MANUAL
+            if (isThrottlePedalPressed() || isPhysicalBrakePressed()) {
+                currentState         = MANUAL_STATE;
+                dmsStartTime         = 0;
+                s_idle_ready_logged  = false;
+                vcs_log("IDLE: driver input -> MANUAL");
+                break;
+            }
+
+            // DMS hold + Jetson AUTO → AUTONOMOUS countdown
+            bool jetsonWantsAuto = (getANSCommandMode() == 1 ||
+                                    getANSCommandMode() == 3);
+            if (isDeadmanActive() && jetsonWantsAuto) {
+                if (dmsStartTime == 0) {
+                    dmsStartTime = millis();
+                    vcs_log("IDLE: DMS + Jetson ready — AUTO countdown");
+                }
+                if (millis() - dmsStartTime > DMS_HOLD_REQUIRED_MS) {
+                    currentState        = AUTONOMOUS_STATE;
+                    dmsStartTime        = 0;
+                    s_idle_ready_logged = false;
+                    vcs_log("FSM: IDLE -> AUTONOMOUS");
+                }
+            } else {
+                if (dmsStartTime != 0) dmsStartTime = 0;
+            }
             break;
+        }
 
         // ── MANUAL ───────────────────────────────────────────
         case MANUAL_STATE: {
@@ -231,11 +304,16 @@ void updateStateMachine() {
     // ENTRY ACTIONS (run once per state change)
     // ---------------------------------------------------------
     if (currentState != lastState) {
-        if (!isDrivingState()) {
-            forceBrakeEngagement(true);
-        }
-        if (currentState == IDLE_STATE && lastState == INIT_STATE) {
+        if (currentState == IDLE_STATE) {
+            // IDLE entry: start brake retraction and record timestamp.
+            // Nothing moves until s_idleEntryMs + BRAKE_RETRACT_MS + 200ms.
+            s_idleEntryMs = millis();
+            forceBrakeEngagement(false);   // begin retract
+            vcs_log("IDLE entered: brakes retracting");
             hall_interrupts_attach();
+        } else if (!isDrivingState()) {
+            forceBrakeEngagement(true);    // INIT / FAULT: brakes ON
+            s_idleEntryMs = 0;
         }
         Serial.print(F("VCS_STATE_MACHINE: -> "));
         Serial.println(getStateName(currentState));
