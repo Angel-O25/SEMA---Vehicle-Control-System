@@ -25,6 +25,7 @@
 // ============================================================
 
 #include "vcs_uart.h"
+#include "vcs_pins.h"
 #include "vcs_hallsensor.h"
 #include "vcs_steering.h"
 #include "vcs_simulation.h"
@@ -291,6 +292,10 @@ void broadcastVehicleTelemetry(uint8_t gear) {
     buf[5] = (uint8_t)((steer  >> 8) & 0xFF);   // ACTUAL_STEER_H (frame byte 7)
     buf[6] = (uint8_t)( steer        & 0xFF);   // ACTUAL_STEER_L (frame byte 8)
     buf[7] = brake;                             // ACTUAL_BRAKE (frame byte 9)
+    // bit 0 = reverse engaged
+    // bit 1 = brake limit switch hit (fully extended = brakes ON)
+    //         Jetson can use this to confirm brake engaged before retracting
+    revField |= (digitalRead(PIN_LIMIT_SWITCH) == HIGH ? 0x02 : 0x00);
     buf[8] = revField;                          // ACTUAL_REVERSE bitfield (frame byte 10)
 
     uint16_t crc = calculateCRC16(buf, 9);
@@ -406,4 +411,3 @@ void printHexDebug(const char* prefix, const uint8_t* data, uint8_t length) {
         data[10]
     );
 }
-

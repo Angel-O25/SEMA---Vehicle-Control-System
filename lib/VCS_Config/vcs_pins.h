@@ -27,7 +27,7 @@
 #define PIN_THROTTLE_OUT   25   // DAC1 (0–3.3V) → LM358 → 0–4.7V to motor controller
 #define PIN_STEER_PUL      18   // LEDC ch0 → DM542 PUL-
 #define PIN_STEER_DIR      19   // → DM542 DIR-
-#define PIN_STEER_ENA      23   // → DM542 ENA-  (LOW = disabled, HIGH = enabled)
+#define PIN_STEER_ENA      23   // → DQ860MA ENA- via 2N2222: LOW=enabled, HIGH=disabled
 
 
 // --- TB6612 Brake Actuator (channels paralleled) ---

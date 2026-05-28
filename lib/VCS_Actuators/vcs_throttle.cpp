@@ -1,127 +1,172 @@
+// ============================================================
+//  vcs_throttle.cpp — SIDLAK 2 VCS
+//  Team Wired PH0017003 | Shell Eco-marathon 2026
+//
+//  AUTONOMOUS: open-loop DAC from lookup table (no PID, no hall sensor)
+//  MANUAL:     pedal ADC pass-through
+//
+//  Calibration data (tachometer, no-load):
+//    throttle 29% (DAC  74) →  12.5 RPM
+//    throttle 40% (DAC 102) → 173   RPM  ← reliable minimum
+//    throttle 43% (DAC 110) → 208   RPM
+//    throttle 44% (DAC 112) → 219   RPM
+//    throttle 45% (DAC 115) → 229   RPM
+//    throttle 60% (DAC 153) → 417   RPM
+//    throttle 70% (DAC 178) → 537   RPM  ← motor cap
+//    throttle 70%+          → 537   RPM  (capped)
+//
+//  Competition (15–20 km/h):
+//    15 km/h → 196 RPM → DAC 107 (42%)
+//    17.5 km/h → 229 RPM → DAC 115 (45%)
+//    20 km/h → 261 RPM → DAC 121 (47.5%)
+// ============================================================
+
 #include "vcs_throttle.h"
 #include "vcs_state_machine.h"
 #include "vcs_constants.h"
 #include "vcs_pins.h"
-#include "vcs_hallsensor.h" 
 #include "vcs_calibration.h"
+#include "vcs_debug.h"
 #include "esp_adc_cal.h"
 #include "driver/adc.h"
 
 esp_adc_cal_characteristics_t adc_chars;
 
 uint16_t current_throttle_adc = 0;
-uint16_t current_pwm_duty = 0;
+uint16_t current_pwm_duty     = 0;
 
-float smoothedThrottle = 0.0f;
+static uint8_t s_last_dac         = 0;
+static float   s_estimated_rpm    = 0.0f;
 
-// FIX 9: file-scope statics — prevent any external writes that
-// could race with QuickPID's pointer-based setpoint/input access.
-static float measured_rpm     = 0.0f;
-static float target_rpm       = 0.0f;
-static float throttle_pwm_out = 0.0f;
+// ─────────────────────────────────────────────────────────────
+//  Lookup table — measured tachometer data (no-load)
+//  Sorted ascending by RPM.  Linear interpolation between points.
+// ─────────────────────────────────────────────────────────────
+struct ThrottlePoint { float rpm; uint8_t dac; };
 
-QuickPID speedPID(&measured_rpm, &throttle_pwm_out, &target_rpm);
+static const ThrottlePoint OL_TABLE[] = {
+    {   0.0f,   0 },   // stopped
+    {  12.5f,  74 },   // 29% — approximate, motor barely turning
+    { 173.0f, 102 },   // 40% — reliable minimum start
+    { 208.0f, 110 },   // 43%
+    { 219.0f, 112 },   // 44%
+    { 229.0f, 115 },   // 45%
+    { 417.0f, 153 },   // 60%
+    { 537.0f, 178 },   // 70% — motor cap
+};
+static constexpr int OL_TABLE_LEN = (int)(sizeof(OL_TABLE) / sizeof(OL_TABLE[0]));
 
-void initThrottle() {
-    pinMode(PIN_THROTTLE_OUT, OUTPUT);
-    pinMode(PIN_THROTTLE_IN, INPUT);
+// ── Forward: RPM → DAC ───────────────────────────────────────
+static uint8_t rpmToDac(float rpm) {
+    if (rpm <= 0.0f) return 0;
+    if (rpm >= OL_TABLE[OL_TABLE_LEN-1].rpm) return OL_TABLE[OL_TABLE_LEN-1].dac;
 
-    // Factory eFuse calibrated ADC
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11); // GPIO 34
-    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
-
-    speedPID.SetTunings(SPEED_KP, SPEED_KI, 0.0f);
-    speedPID.SetOutputLimits(MIN_PWM_OUT, MAX_PWM_OUT);
-
-    // FIX 1: sample time MUST match actual call rate (100Hz = 10000us).
-    // Previously set to 1000us — caused QuickPID's internal dt math to
-    // be off by 10x, making tuned Kp/Ki gains behave incorrectly.
-    speedPID.SetSampleTimeUs(10000);
-
-    speedPID.SetMode(QuickPID::Control::manual);
+    for (int i = 0; i < OL_TABLE_LEN - 1; i++) {
+        float r0 = OL_TABLE[i].rpm,  r1 = OL_TABLE[i+1].rpm;
+        float d0 = OL_TABLE[i].dac,  d1 = OL_TABLE[i+1].dac;
+        if (rpm >= r0 && rpm <= r1) {
+            float t   = (rpm - r0) / (r1 - r0);
+            uint8_t dac = (uint8_t)constrain((int)(d0 + t*(d1-d0) + 0.5f), 0, 255);
+            return max(dac, (uint8_t)THROTTLE_OL_START_DAC);   // ← ADD: floor at throttle 29% for any non-zero request
+        }
+    }
+    return 74;   // fallback
 }
 
-void updateThrottle(float current_rpm_in, float target_rpm_in) {
-    // --- EMA FILTER INJECTION ---
+// ── Reverse: DAC → estimated RPM (for reporting back to Jetson) ──
+static float dacToRpm(uint8_t dac) {
+    if (dac <= 0)                         return 0.0f;
+    if (dac >= OL_TABLE[OL_TABLE_LEN-1].dac) return OL_TABLE[OL_TABLE_LEN-1].rpm;
+    for (int i = 0; i < OL_TABLE_LEN - 1; i++) {
+        float d0 = OL_TABLE[i].dac,   d1 = OL_TABLE[i+1].dac;
+        float r0 = OL_TABLE[i].rpm,   r1 = OL_TABLE[i+1].rpm;
+        if ((float)dac >= d0 && (float)dac <= d1) {
+            if (d1 <= d0) return r0;
+            float t = ((float)dac - d0) / (d1 - d0);
+            return r0 + t * (r1 - r0);
+        }
+    }
+    return 0.0f;
+}
+
+// ── Safe DAC write ────────────────────────────────────────────
+static void writeDac(uint8_t val) {
+    val = constrain(val, 0, (uint8_t)THROTTLE_MAX_DAC);
+    dacWrite(PIN_THROTTLE_OUT, val);
+    s_last_dac      = val;
+    s_estimated_rpm = dacToRpm(val);
+    current_pwm_duty = (uint16_t)map(val, 0, 255, 0, 1023);
+}
+
+// ─────────────────────────────────────────────────────────────
+void initThrottle() {
+    pinMode(PIN_THROTTLE_OUT, OUTPUT);
+    pinMode(PIN_THROTTLE_IN,  INPUT);
+
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11);
+    adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_11); // steering pot shares chars
+    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11,
+                             ADC_WIDTH_BIT_12, 1100, &adc_chars);
+}
+
+// ─────────────────────────────────────────────────────────────
+void updateThrottle(float /*unused*/, float target_rpm_in) {
+
+    // ── Read pedal ADC (manual + debug) ──────────────────────
     uint32_t sum = 0;
     for (int i = 0; i < 16; i++) sum += adc1_get_raw(ADC1_CHANNEL_6);
     uint32_t pedal_mv = esp_adc_cal_raw_to_voltage(sum / 16, &adc_chars);
-    int rawThrottle = map(pedal_mv, 0, 3300, 0, 1023); 
+    current_throttle_adc = (uint16_t)map(pedal_mv, 0, 3300, 0, 1023);
 
-    smoothedThrottle = (THROTTLE_EMA_ALPHA * (float)rawThrottle)
-                     + ((1.0f - THROTTLE_EMA_ALPHA) * smoothedThrottle);
-    current_throttle_adc = (uint16_t)smoothedThrottle;
+    // ── Safety lockout ────────────────────────────────────────
+    bool brakePressed = (digitalRead(PIN_LOWBRAKE_IN) == LOW);
+    bool validState   = (currentState == AUTONOMOUS_STATE ||
+                         currentState == MANUAL_STATE);
 
-    // --- FETCH HARDWARE SPEED LIMIT ---
-    float speed_multiplier = 1.0f; 
-    int dynamic_max_pwm = MAX_PWM_OUT;
-
-    speedPID.SetOutputLimits(MIN_PWM_OUT, dynamic_max_pwm);
-
-    // --- 1. HARDWARE SAFETY LOCKOUT ---
-    bool isBrakePressed = (digitalRead(PIN_LOWBRAKE_IN) == LOW);  // active LOW
-
-    if ((currentState != AUTONOMOUS_STATE && currentState != MANUAL_STATE) || isBrakePressed) {
-        current_pwm_duty = MIN_PWM_OUT;
-
-        // FIX 3: use the named pin constant, not magic number 25
-        int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
-        dacWrite(PIN_THROTTLE_OUT, constrain(dac_val, 0, 255));
-
-        // FIX 2: clear PID state on transition to manual.
-        // QuickPID's SetMode(manual) does NOT clear the integral —
-        // Initialize() does. Without this, the next AUTONOMOUS entry
-        // inherits stale integral and surges the actuator.
-        if (speedPID.GetMode() != (uint8_t)QuickPID::Control::manual) {
-            speedPID.SetMode(QuickPID::Control::manual);
-            speedPID.Initialize();
-        }
-        throttle_pwm_out = MIN_PWM_OUT;
-        return; 
+    if (!validState || brakePressed) {
+        writeDac(0);
+        return;
     }
 
-    // --- 2. AUTONOMOUS CONTROL (PID) ---
+    // ── 1. AUTONOMOUS — open-loop lookup ─────────────────────
     if (currentState == AUTONOMOUS_STATE) {
-        if (speedPID.GetMode() == (uint8_t)QuickPID::Control::manual) {
-            // Bumpless transfer: seed PID output with current pwm
-            // before flipping to automatic, so the actuator doesn't jump.
-            throttle_pwm_out = (float)current_pwm_duty;
-            speedPID.SetMode(QuickPID::Control::automatic);
+        float target = (dbg_throttle_override_dac >= 0)
+            ? dacToRpm((uint8_t)constrain(dbg_throttle_override_dac, 0, 255))
+            : target_rpm_in;
+
+        writeDac(rpmToDac(target));
+        return;
+    }
+
+    // ── 2. MANUAL — pedal pass-through ───────────────────────
+    if (currentState == MANUAL_STATE) {
+        if (dbg_throttle_override_dac >= 0) {
+            writeDac((uint8_t)constrain(dbg_throttle_override_dac, 0, 255));
+            return;
         }
 
-        measured_rpm = current_rpm_in;
-        target_rpm   = target_rpm_in;
-
-        if (consumeNewRPMSample() && speedPID.Compute()) {
-            current_pwm_duty = (uint16_t)throttle_pwm_out;
-            int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
-            dacWrite(PIN_THROTTLE_OUT, constrain(dac_val, 0, 255));   // FIX 3
-        }
-    } 
-    // --- 3. MANUAL CONTROL (Pass-Through) ---
-    else if (currentState == MANUAL_STATE) {
-        int mapped_pwm = MIN_PWM_OUT;
-        
+        uint8_t dac = 0;
         if (current_throttle_adc > THROTTLE_MIN_INPUT) {
-            mapped_pwm = map(current_throttle_adc, THROTTLE_MIN_INPUT, THROTTLE_MAX_INPUT, MIN_PWM_OUT, dynamic_max_pwm);
-            mapped_pwm = constrain(mapped_pwm, MIN_PWM_OUT, dynamic_max_pwm);
+            // Map pedal range to motor start→cap (DAC 74 to THROTTLE_MAX_DAC)
+            // Below THROTTLE_MIN_INPUT: output 0 (deadband, motor won't run)
+            int mapped = map(current_throttle_adc,
+                             THROTTLE_MIN_INPUT,  THROTTLE_MAX_INPUT,
+                             THROTTLE_OL_MIN_DAC, THROTTLE_MAX_DAC);
+            dac = (uint8_t)constrain(mapped, 0, THROTTLE_MAX_DAC);
         }
-        
-        current_pwm_duty = mapped_pwm;
-        int dac_val = map(current_pwm_duty, 0, 1023, 0, 255);
-        dacWrite(PIN_THROTTLE_OUT, constrain(dac_val, 0, 255));       // FIX 3
-        
-        throttle_pwm_out = mapped_pwm;
-
-        // FIX 2: clear PID state when entering manual from autonomous
-        if (speedPID.GetMode() != (uint8_t)QuickPID::Control::manual) {
-            speedPID.SetMode(QuickPID::Control::manual);
-            speedPID.Initialize();
-        }
+        writeDac(dac);
+        return;
     }
 }
 
-bool isThrottlePedalPressed() {
-    return (current_throttle_adc > (THROTTLE_MIN_INPUT + 15));
+// ── Getters ──────────────────────────────────────────────────
+uint8_t  getThrottleDacOut()       { return s_last_dac; }
+float    getThrottleEstimatedRPM() { return s_estimated_rpm; }
+bool     isThrottlePedalPressed()  { return current_throttle_adc > THROTTLE_MIN_INPUT; }
+
+uint32_t getThrottlePedalMv() {
+    uint32_t sum = 0;
+    for (int i = 0; i < 16; i++) sum += adc1_get_raw(ADC1_CHANNEL_6);
+    return esp_adc_cal_raw_to_voltage(sum / 16, &adc_chars);
 }

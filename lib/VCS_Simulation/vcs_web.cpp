@@ -126,6 +126,15 @@ const char index_html[] PROGMEM = R"rawliteral(
             <div style="display:flex; justify-content:space-between;">
                 <div>
                     <span style="color:#00FF00;">Actual RPM</span> | <span style="color:#ff00ff;">Target RPM</span>
+                    <!-- OLED Live Display -->
+                    <div style="margin-top:16px;">
+                      <div style="color:#e8970a;font-size:11px;font-family:monospace;margin-bottom:4px;">&#9670; OLED LIVE</div>
+                      <canvas id="oledCV" width="256" height="128"
+                        style="background:#000;border:2px solid #1c2c1c;border-radius:3px;
+                               display:block;image-rendering:pixelated;
+                               box-shadow:0 0 10px #00ff8822;"></canvas>
+                    </div>
+                    <!-- RPM Chart -->
                     <canvas id="rpmChart" width="350" height="150" style="border:1px solid #333; margin-top:5px;"></canvas>
                 </div>
                 <div style="text-align:center;">
@@ -179,6 +188,53 @@ const char index_html[] PROGMEM = R"rawliteral(
         });
 
         // Canvas Setup
+
+        // ── OLED live canvas ─────────────────────────────────────
+        const oledCV  = document.getElementById('oledCV');
+        const oledCtx = oledCV ? oledCV.getContext('2d') : null;
+        // Draw blank state on load so canvas is visible before data arrives
+        if (oledCtx) {
+          oledCtx.fillStyle = '#000';
+          oledCtx.fillRect(0, 0, 256, 128);
+          oledCtx.fillStyle = '#333';
+          oledCtx.font = '10px monospace';
+          oledCtx.fillText('OLED LIVE — waiting for VCS...', 8, 64);
+        }
+        function drawOled(d) {
+          if (!oledCtx) return;
+          const ctx = oledCtx, W=256, H=128;
+          ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+          function T(s,x,y,col,fs){
+            ctx.fillStyle=col||'#eee'; ctx.font=(fs||10)+'px monospace';
+            ctx.fillText(s,x,y);
+          }
+          function DIV(y){ ctx.fillStyle='#1e2e1e'; ctx.fillRect(0,y,W,1); }
+          function BAR(x,y,w,h,n){
+            ctx.strokeStyle='#2a3a2a'; ctx.lineWidth=1;
+            ctx.strokeRect(x,y,w,h);
+            ctx.fillStyle='#0a8'; ctx.fillRect(x+1,y+1,Math.round((w-2)*n),(h-2));
+            ctx.fillStyle='#444'; ctx.fillRect(x+w/2-1,y,2,h+3);
+          }
+          const stCol = d.state==='AUTONOMOUS'?'#0f8':d.state==='MANUAL'?'#ff0':
+                        d.state==='IDLE'?'#4af':'#f55';
+          T('VCS:'+d.state, 2,10, stCol);
+          T('JET:'+(d.jetson_link?'LNK':'---'), 130,10, d.jetson_link?'#0f8':'#f55');
+          DIV(14);
+          T('RPM:'+parseFloat(d.rpm||0).toFixed(0), 2,25,'#0f8');
+          T(parseFloat(d.speed||0).toFixed(1)+'km/h', 130,25,'#7cf');
+          T('STR:',2,40,'#eee');
+          const ang=parseFloat(d.steer_angle||0);
+          BAR(36,32,110,9, Math.max(0,Math.min(1,(ang+18)/36)));
+          T((ang>=0?'+':'')+ang.toFixed(1)+'°', 150,40,'#ff0');
+          const bp=parseInt(d.t_brake)||0;
+          T('BRK:'+bp+'%',2,54, bp>0?'#f55':'#555');
+          T(d.dir||'FWD', 80,54, (d.dir||'').includes('REV')?'#f80':'#0f8');
+          const dok=(d.dms||'').includes('HELD');
+          T('DMS:'+(dok?'OK':'--'), 130,54, dok?'#0f8':'#555');
+          DIV(58);
+          T('SEM2026  TEAM WIRED  PH0017003',4,67,'#333',8);
+        }
+
         const rpmCtx = document.getElementById('rpmChart').getContext('2d');
         const steerCtx = document.getElementById('steerCanvas').getContext('2d');
         let rpmData = [], trpmData = [];
@@ -214,7 +270,7 @@ const char index_html[] PROGMEM = R"rawliteral(
             steerCtx.clearRect(0, 0, 120, 120);
             steerCtx.save();
             steerCtx.translate(60, 60);
-            steerCtx.rotate(angle * Math.PI / 180);
+            steerCtx.rotate(-angle * Math.PI / 180);  // negative = correct visual direction
             // Draw Tires
             steerCtx.fillStyle = '#FFF';
             steerCtx.fillRect(-40, -25, 20, 50);

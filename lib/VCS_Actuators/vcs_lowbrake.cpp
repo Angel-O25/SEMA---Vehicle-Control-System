@@ -86,24 +86,6 @@ void updateLowBrake() {
         retracting = false;
     }
 
-        // In updateLowBrake() — protect against stuck limit switch
-    static uint32_t extend_started_ms = 0;
-    static bool extending = false;
-
-    // When forceBrakeEngagement(true) starts an extend:
-    if (!extending && digitalRead(PIN_LIMIT_SWITCH) != LOW) {
-        brake_actuator_extend();
-        extend_started_ms = millis();
-        extending = true;
-    }
-
-    if (extending) {
-        if (digitalRead(PIN_LIMIT_SWITCH) == LOW ||
-            (millis() - extend_started_ms) >= BRAKE_EXTEND_TIMEOUT_MS) {
-            brake_actuator_coast();
-            extending = false;
-        }
-    }
 }
 
 void forceBrakeEngagement(bool engage) {

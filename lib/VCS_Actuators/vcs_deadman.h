@@ -10,6 +10,7 @@ void initDeadman();
 void updateDeadman();
 
 // Returns true ONLY if BOTH grips have been actively held (debounced).
-bool isDeadmanActive();
+bool isDeadmanActive();          // BOTH switches held (AUTONOMOUS)
+bool isEitherDeadmanHeld();      // EITHER switch held (INIT→IDLE)
 
 #endif // VCS_DEADMAN_H
