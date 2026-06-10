@@ -16,6 +16,21 @@
 //         advances in discrete tooth steps, not continuously
 //  New:   Proportional speed in mV space — motor slows as it
 //         approaches target instead of running at fixed max speed
+//
+//  2026-06 fixes:
+//  Fix 1: All ledcWrite(0,0) stop calls changed to ledcWrite(0,255)
+//         so PUL- idles HIGH (opto OFF) instead of LOW (opto ON).
+//         With common-anode wiring, PUL- LOW = opto permanently ON
+//         = driver counts spurious steps and wastes power.
+//         Exception: direction-change pause at line ~255 stays as
+//         ledcWrite(0,0) — it is momentary (5µs) before 128 fires.
+//  Fix 2: commToMv() now respects debug calibration overrides
+//         (dbg_pot_min_mv / dbg_pot_max_mv) when in debug mode.
+//         Previously always used compile-time constants, so
+//         steer_mv commands during calibration used wrong mapping.
+//  Fix 3: Effort denominator reduced 1500→400 to match actual
+//         pot range (~720mV total). With 1500mV denominator the
+//         motor ran at minimum speed (80Hz) for the entire travel.
 // ============================================================
 
 #include "vcs_steering.h"
@@ -51,6 +66,10 @@ void initSteering() {
     pinMode(PIN_STEER_DIR, OUTPUT);
     pinMode(PIN_STEER_ENA, OUTPUT);
 
+    // Configure LEDC channel 0 for stepper pulses.
+    // ledcSetup() must be called before ledcAttachPin() — order matters.
+    // ledcAttachPin() connects the hardware timer output to GPIO 18.
+    // After this pair, GPIO 18 is driven by the LEDC peripheral.
     ledcSetup(0, STEPPER_MAX_HZ, 8);
     ledcAttachPin(PIN_STEER_PUL, 0);
 
@@ -59,7 +78,8 @@ void initSteering() {
     // Boot safe: stepper disabled
     // 2N2222 inverter: HIGH = transistor ON = opto fires = motor DISABLED
     digitalWrite(PIN_STEER_ENA, HIGH);
-    ledcWrite(0, 0);
+    // Idle HIGH: PUL- stays HIGH = opto OFF = no spurious steps at boot
+    ledcWrite(0, 255);
 
     // Seed smoothed value from actual pot to avoid startup lurch
     uint32_t boot_mv = getSteeringRawMv();
@@ -73,8 +93,8 @@ void initSteering() {
 // getMeasuredSteering — returns current position as COMM (0-1000).
 // Used by OLED display, odometry, and debug screens.
 // Physical mapping (confirmed on hardware):
-//   Low  mV (~142)  = physical RIGHT → COMM 1000
-//   High mV (~3145) = physical LEFT  → COMM 0
+//   Low  mV (~1240) = physical RIGHT → COMM 1000
+//   High mV (~1960) = physical LEFT  → COMM 0
 // ─────────────────────────────────────────────────────────────
 uint16_t getMeasuredSteering() {
     uint16_t current_pos;
@@ -93,8 +113,8 @@ uint16_t getMeasuredSteering() {
     // Calibration range — use debug overrides if in debug mode
     uint32_t pot_raw_min = isDebugMode() ? dbg_pot_min_mv : (uint32_t)STEER_POT_MIN_MV;
     uint32_t pot_raw_max = isDebugMode() ? dbg_pot_max_mv : (uint32_t)STEER_POT_MAX_MV;
-    uint32_t pot_lo = min(pot_raw_min, pot_raw_max);   // 142  (physical right, low mV)
-    uint32_t pot_hi = max(pot_raw_min, pot_raw_max);   // 3145 (physical left,  high mV)
+    uint32_t pot_lo = min(pot_raw_min, pot_raw_max);
+    uint32_t pot_hi = max(pot_raw_min, pot_raw_max);
 
     pot_mv = constrain(pot_mv, pot_lo, pot_hi);
 
@@ -106,10 +126,9 @@ uint16_t getMeasuredSteering() {
     // High mV (left end)  → COMM_STEER_LEFT  (0)
     int mapped_pos = map((long)smoothedSteering,
                          (long)pot_lo, (long)pot_hi,
-                         (long)COMM_STEER_RIGHT,   // low  mV = right = COMM 1000
-                         (long)COMM_STEER_LEFT);    // high mV = left  = COMM 0
+                         (long)COMM_STEER_RIGHT,
+                         (long)COMM_STEER_LEFT);
 
-    // BUG 1 FIX: assign mapped_pos to current_pos (was missing — caused garbage return)
     current_pos = (uint16_t)constrain(mapped_pos, COMM_STEER_LEFT, COMM_STEER_RIGHT);
 #endif
 
@@ -126,13 +145,20 @@ uint16_t getMeasuredSteering() {
 // commToMv — convert COMM (0-1000) back to pot mV.
 // Used to work in mV space for deadband and direction decisions.
 // Inverse of the map in getMeasuredSteering().
+//
+// FIX 2: now uses debug calibration overrides when in debug mode
+// so steer_mv commands use the correct mV range during calibration.
 // ─────────────────────────────────────────────────────────────
 static float commToMv(uint16_t comm) {
-    // map(COMM, COMM_RIGHT, COMM_LEFT, pot_lo, pot_hi)
-    // i.e., map(comm, 1000, 0, 142, 3145)
+    float pot_lo = isDebugMode()
+        ? (float)min(dbg_pot_min_mv, dbg_pot_max_mv)
+        : min(STEER_POT_MIN_MV, STEER_POT_MAX_MV);
+    float pot_hi = isDebugMode()
+        ? (float)max(dbg_pot_min_mv, dbg_pot_max_mv)
+        : max(STEER_POT_MIN_MV, STEER_POT_MAX_MV);
     return (float)map((long)comm,
                       (long)COMM_STEER_RIGHT, (long)COMM_STEER_LEFT,
-                      (long)STEER_POT_MIN_MV, (long)STEER_POT_MAX_MV);
+                      (long)pot_lo, (long)pot_hi);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -146,51 +172,28 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
 
     // ── Disconnection guard ───────────────────────────────────
     if (raw < 50 || raw > 3250) {
-        ledcWrite(0, 0);
+        // FIX 1: idle HIGH (opto OFF) not LOW (opto ON)
+        ledcWrite(0, 255);
         digitalWrite(PIN_STEER_ENA, HIGH);
         if (dbg) Serial.println("[STEER] pot disconnected");
         return;
     }
 
-    // ── Hard physical limits — stop BEFORE mechanical end stops ──
-    // Physical RIGHT = low  mV (~142) = STEER_POT_MIN_MV
-    // Physical LEFT  = high mV (~3145) = STEER_POT_MAX_MV
-    const int32_t MARGIN_MV    = 80;
-    bool at_right_physical = ((int32_t)raw <= (int32_t)STEER_POT_MIN_MV + MARGIN_MV);
-    bool at_left_physical  = ((int32_t)raw >= (int32_t)STEER_POT_MAX_MV - MARGIN_MV);
-
-    // BUG 3 FIX: direction check in mV space (not COMM) to avoid
-    // the label inversion that existed when using COMM comparisons.
-    // going_right = want to decrease mV (toward right end)
-    // going_left  = want to increase mV (toward left  end)
-    float target_mv_raw = commToMv(target_position);
-    bool going_right = (target_mv_raw < (float)raw);
-    bool going_left  = (target_mv_raw > (float)raw);
-
-    if ((at_right_physical && going_right) ||
-        (at_left_physical  && going_left)) {
-        ledcWrite(0, 0);
-        digitalWrite(PIN_STEER_ENA, LOW);   // hold (2N2222: LOW=enabled)
-        if (dbg) Serial.printf("[STEER] HARD LIMIT raw=%lu going=%s\n",
-                               (unsigned long)raw,
-                               going_right ? "RIGHT" : "LEFT");
-        return;
-    }
-
     // ── Debug steer control override ─────────────────────────
-    // BUG 2 FIX: use debug_tgt (not target_position) after mapping.
     if (isDebugSteerControl()) {
         uint32_t pot_lo = min(dbg_pot_min_mv, dbg_pot_max_mv);
         uint32_t pot_hi = max(dbg_pot_min_mv, dbg_pot_max_mv);
-        if (pot_lo < pot_hi) {
-            int debug_tgt = map((long)dbg_steer_target_mv,
-                                (long)pot_hi, (long)pot_lo,
-                                (long)COMM_STEER_LEFT, (long)COMM_STEER_RIGHT);
-            // BUG 2 FIX was here: constrain debug_tgt, not target_position
-            target_position = (uint16_t)constrain(debug_tgt,
-                                                   STEER_COMM_LEFT_SAFE,
-                                                   STEER_COMM_RIGHT_SAFE);
+        // Fall back to compile-time constants if debug pot not calibrated
+        if (pot_lo >= pot_hi) {
+            pot_lo = (uint32_t)min(STEER_POT_MIN_MV, STEER_POT_MAX_MV);
+            pot_hi = (uint32_t)max(STEER_POT_MIN_MV, STEER_POT_MAX_MV);
         }
+        int debug_tgt = map((long)dbg_steer_target_mv,
+                            (long)pot_hi, (long)pot_lo,
+                            (long)COMM_STEER_LEFT, (long)COMM_STEER_RIGHT);
+        target_position = (uint16_t)constrain(debug_tgt,
+                                               STEER_COMM_LEFT_SAFE,
+                                               STEER_COMM_RIGHT_SAFE);
         is_automatic = true;
     }
 
@@ -198,8 +201,29 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     if (!is_automatic) {
         if (dbg) Serial.println("[STEER] MANUAL -> ENA=HIGH (shaft free)");
         digitalWrite(PIN_STEER_ENA, HIGH);
-        ledcWrite(0, 0);
+        // FIX 1: idle HIGH (opto OFF) not LOW (opto ON)
+        ledcWrite(0, 255);
         s_last_freq_hz = -1;
+        return;
+    }
+
+    // ── Hard physical limits — only reached in autonomous mode ──
+    // Use phy_lo/phy_hi so logic is correct regardless of MIN > MAX or MIN < MAX.
+    // Your cal: MIN_MV=2000 (right end), MAX_MV=1200 (left end) → inverted range.
+    // Old code: at_left = (raw >= MAX_MV - 80) = (raw >= 1120) → always true. Fixed.
+    const int32_t MARGIN_MV = 80;
+    const int32_t phy_lo = (int32_t)min(STEER_POT_MIN_MV, STEER_POT_MAX_MV);  // 1200
+    const int32_t phy_hi = (int32_t)max(STEER_POT_MIN_MV, STEER_POT_MAX_MV);  // 2000
+    bool at_lo_end = ((int32_t)raw <= phy_lo + MARGIN_MV);  // raw <= 1280
+    bool at_hi_end = ((int32_t)raw >= phy_hi - MARGIN_MV);  // raw >= 1920
+    float target_mv_raw = commToMv(target_position);
+    bool heading_lo = (target_mv_raw < (float)raw);   // moving toward lower mV
+    bool heading_hi = (target_mv_raw > (float)raw);   // moving toward higher mV
+    if ((at_lo_end && heading_lo) || (at_hi_end && heading_hi)) {
+        ledcWrite(STEER_LEDC_CH, 0);
+        digitalWrite(PIN_STEER_ENA, LOW);
+        if (dbg) Serial.printf("[STEER] HARD LIMIT raw=%lu end=%s\n",
+                               (unsigned long)raw, at_lo_end ? "LO" : "HI");
         return;
     }
 
@@ -209,12 +233,8 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
                                            STEER_COMM_RIGHT_SAFE);
 
     // ── mV-based control ─────────────────────────────────────
-    // Work in mV space so geared stepping (incremental, not continuous)
-    // is handled correctly. ±STEER_MV_DEADBAND tolerance avoids
-    // hunting between gear teeth.
     float target_mv = commToMv(target_position);
-    float mv_error  = target_mv - (float)raw;   // positive = need more mV = go LEFT
-                                                  // negative = need less mV = go RIGHT
+    float mv_error  = target_mv - (float)raw;
 
     if (dbg) {
         Serial.printf("[STEER] raw=%lumV tgt=%lumV err=%+.0fmV comm_tgt=%u comm_meas=%u\n",
@@ -229,8 +249,9 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     if (fabsf(mv_error) < STEER_MV_DEADBAND) {
         if (dbg) Serial.printf("[STEER] DEADBAND %.0fmV < %.0fmV -> hold\n",
                                fabsf(mv_error), (float)STEER_MV_DEADBAND);
-        ledcWrite(0, 0);
-        digitalWrite(PIN_STEER_ENA, LOW);   // hold (2N2222: LOW=enabled)
+        // FIX 1: idle HIGH (opto OFF) not LOW (opto ON)
+        ledcWrite(0, 255);
+        digitalWrite(PIN_STEER_ENA, LOW);   // hold position (2N2222: LOW=enabled)
         s_last_freq_hz = -1;
         return;
     }
@@ -241,17 +262,13 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     // ── Direction ─────────────────────────────────────────────
     // mv_error > 0 → need more mV → go LEFT  (high mV = left)
     // mv_error < 0 → need less mV → go RIGHT (low  mV = right)
-    //
-    // Physical direction for DIR pin (verified on hardware):
-    //   DIR=HIGH → motor goes LEFT  (increases mV)
-    //   DIR=LOW  → motor goes RIGHT (decreases mV)
-    //
-    // If this is inverted on your car, set STEER_DIR_FLIP true
-    // in vcs_calibration.h.
     bool go_left = (mv_error > 0);
-    bool new_dir = go_left ^ STEER_DIR_FLIP;   // flip if wired opposite
+    bool new_dir = go_left ^ STEER_DIR_FLIP;
 
     if (new_dir != s_last_dir) {
+        // Momentary pulse suppression during direction change only.
+        // This stays as 0 — it lasts only STEER_DM542_DIR_SETUP_US (5µs)
+        // before ledcWrite(0,128) fires immediately after.
         ledcWrite(0, 0);
         delayMicroseconds(STEER_DM542_DIR_SETUP_US);
         s_last_dir = new_dir;
@@ -259,18 +276,27 @@ void updateSteeringPID(uint16_t target_position, bool is_automatic) {
     digitalWrite(PIN_STEER_DIR, new_dir ? HIGH : LOW);
 
     // ── Proportional speed — slow down as error shrinks ───────
-    // Full speed at 1500mV error, minimum speed at deadband edge.
-    float effort = constrain(fabsf(mv_error) / 1500.0f, 0.0f, 1.0f);
+    // FIX 3: denominator reduced 1500→400 to match actual pot range
+    // (~720mV total). With 1500mV denominator the motor ran at
+    // minimum speed (80Hz) for the entire steering travel.
+    // 400mV = just over half the full range = full speed at half deflection.
+    // Effort denominator 200mV — motor reaches full speed only when error
+    // exceeds 200mV. For short moves (e.g. 100mV) effort=0.5 → ~760Hz,
+    // much slower than before (was 435Hz at 400 denom, now half speed).
+    // Reduces overshoot on small corrections without affecting large moves.
+    float effort = constrain(fabsf(mv_error) / 200.0f, 0.0f, 1.0f);
     int step_hz  = (int)(STEER_MIN_HZ + effort * (float)(STEPPER_MAX_HZ - STEER_MIN_HZ));
 
-    // Only reconfigure LEDC if frequency changed enough (each
-    // ledcSetup() causes one spurious pulse)
+    // Update LEDC frequency without detaching the pin.
+    // ledcSetup() + ledcAttachPin() temporarily floats GPIO 18 during
+    // reconfiguration — causes the 1.85V floating measurement and lost
+    // pulses. ledcChangeFrequency() (Arduino ESP32 v2.0+) updates the
+    // timer in-place without touching the pin mux attachment.
     if (abs(step_hz - s_last_freq_hz) >= STEER_FREQ_UPDATE_HZ) {
-        ledcSetup(0, step_hz, 8);
-        ledcAttachPin(PIN_STEER_PUL, 0);
+        ledcChangeFrequency(0, step_hz, 8);
         s_last_freq_hz = step_hz;
     }
-    ledcWrite(0, 128);   // 50% duty
+    ledcWrite(0, 128);   // 50% duty — run
 
 #if SIMULATION_MODE
     updateSimulatedPhysics(step_hz, new_dir);

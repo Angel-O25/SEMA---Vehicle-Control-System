@@ -51,9 +51,9 @@
 //    map(mV, MIN_MV, MAX_MV, COMM_RIGHT, COMM_LEFT)
 //    → low mV = COMM 1000 (right), high mV = COMM 0 (left)
 // ============================================================
-#define STEER_POT_MIN_MV             142.0f    // physical RIGHT end (low  mV)
-#define STEER_POT_CENTER_MV          1502.0f   // mechanical center
-#define STEER_POT_MAX_MV             3145.0f   // physical LEFT  end (high mV)
+#define STEER_POT_MIN_MV             2000.0f    // physical RIGHT end (low  mV)
+#define STEER_POT_CENTER_MV          1600.0f   // mechanical center
+#define STEER_POT_MAX_MV             1200.0f   // physical LEFT  end (high mV)
 #define STEPS_FULL_L                -2000.0f
 #define STEPS_FULL_R                 2000.0f
 
@@ -65,13 +65,13 @@
 // If steering goes the wrong physical direction, set this true.
 // true  = HIGH pin → right, LOW pin → left
 // false = HIGH pin → left,  LOW pin → right  (current wiring)
-#define STEER_DIR_FLIP               false
+#define STEER_DIR_FLIP               true
 
 // ── Safe software travel limits (COMM units 0-1000) ──────────
 // Prevent commanding past the physical steering stops.
 // Widen after confirming no mechanical binding at these limits.
-#define STEER_COMM_LEFT_SAFE         200
-#define STEER_COMM_RIGHT_SAFE        800
+#define STEER_COMM_LEFT_SAFE         30
+#define STEER_COMM_RIGHT_SAFE        970
 
 // ── mV deadband ───────────────────────────────────────────────
 // Motor holds when within this many mV of target.
@@ -80,10 +80,11 @@
 #define STEER_MV_DEADBAND            100.0f
 
 // ── EMA filter for pot ADC reading ───────────────────────────
-#define STEER_EMA_ALPHA              0.15f
+#define STEER_EMA_ALPHA              0.25f
 
 // ── Stepper motor speed ───────────────────────────────────────
-#define STEPPER_MAX_HZ               800    // max step frequency
+#define STEER_LEDC_CH                2      // HS ch2 = Timer1. Ch0/1 share Timer0 with brake — conflict!
+#define STEPPER_MAX_HZ               1500    // confirmed working with BC547
 #define STEER_MIN_HZ                 80     // min (stall-safe)
 #define STEPPER_DEFAULT_HZ           800
 #define STEPPER_PULSES_PER_REV       400    // DQ860MA SW5-SW8=ON
@@ -99,12 +100,15 @@
 // ============================================================
 //  SECTION 6 — BRAKE ACTUATOR CALIBRATION
 // ============================================================
-#define BRAKE_PWM                    200
-#define BRAKE_RETRACT_MS             2900
-#define BRAKE_EXTEND_TIMEOUT_MS      3000
-#define BRAKE_LEDC_CH                1
-#define BRAKE_LEDC_FREQ              10000
-#define BRAKE_LEDC_RES               8
+#define BRAKE_PWM                    200    // full extend/retract power (0-255)
+#define BRAKE_HOLD_PWM                80    // pulse hold power — just enough to resist back-drive
+#define BRAKE_RETRACT_MS           5000    // fully engaged → fully retracted (measured)
+#define BRAKE_POSITION_MS          2000    // fully retracted → ready position near pedal (measured)
+#define BRAKE_PULSE_ON_MS           150    // pulse hold: motor ON duration
+#define BRAKE_PULSE_OFF_MS          100    // pulse hold: motor OFF (coast) duration
+#define BRAKE_LEDC_CH                 1
+#define BRAKE_LEDC_FREQ           10000
+#define BRAKE_LEDC_RES                8
 
 // ============================================================
 //  SECTION 7 — THROTTLE OPEN-LOOP FEEDFORWARD
@@ -119,12 +123,12 @@
 //  SECTION 8 — MOTION SMOOTHING & FILTER TUNING
 // ============================================================
 #undef  STEER_EMA_ALPHA
-#define STEER_ADC_EMA_ALPHA          0.15f
+#define STEER_ADC_EMA_ALPHA          0.25f
 #define STEER_EMA_ALPHA              0.15f
 
 // Deadband in COMM units — kept for any code still referencing it
 // Actual control now uses STEER_MV_DEADBAND (Section 5)
-#define STEER_DEADZONE               8.0f
+#define STEER_DEADZONE               6.0f
 
 #define STEER_RAMP_RATE              40
 #define DMS_HOLD_REQUIRED_MS         1000

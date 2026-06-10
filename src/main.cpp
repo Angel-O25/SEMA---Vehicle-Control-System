@@ -63,7 +63,7 @@ void runCommCycle() {
 }
 
 void ESP32_CommLoop(void *pvParameters) {
-    //initSteering();    
+    initSteering();   // LEDC must init on Core 0 — cannot be called from setup() (Core 1)
     esp_task_wdt_add(NULL);
     for (;;) {
         esp_task_wdt_reset();
@@ -100,6 +100,8 @@ void DisplayLoop(void *pvParameters) {
 // ─────────────────────────────────────────────────────────────
 void setup() {
     dacWrite(PIN_THROTTLE_OUT, 0);   // MUST be absolute first line
+    pinMode(PIN_STEER_ENA, OUTPUT);
+    digitalWrite(PIN_STEER_ENA, HIGH);  // disable stepper before any init
 
     Serial.begin(115200);
     Serial.println(F("\n--- VCS SIDLAK2 ESP32 ---"));

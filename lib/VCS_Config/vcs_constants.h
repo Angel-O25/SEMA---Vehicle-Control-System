@@ -32,6 +32,7 @@
 #define COMM_STEER_RIGHT    1000
 #define COMM_BRAKE_MIN      0
 #define COMM_BRAKE_MAX      100
+#define STEER_PUL_HIGH_US   5000
 
 #define VCS_FAULT_NONE               0x00000000u
 #define VCS_FAULT_UART_CRC           0x00000001u
@@ -58,7 +59,7 @@ constexpr uint16_t FAULT_SIGNAL_TIMEOUT = 0x0004;
 // ============================================================
 #define MIN_PWM_OUT        297    // FIXED: was 0 (motor unresponsive at low commands)
 #define MAX_PWM_OUT       1023
-#define THROTTLE_MIN_INPUT 201    // = map(650mV, 0, 3300, 0, 1023)
+#define THROTTLE_MIN_INPUT 310    // = map(650mV, 0, 3300, 0, 1023)
 #define THROTTLE_MAX_INPUT 930    // = map(3000mV, 0, 3300, 0, 1023)
 
 #include "vcs_calibration.h"

@@ -368,7 +368,7 @@ void updateDebugDisplay() {
 
         case DBG_BRAKE: {
             bool sw  = isPhysicalBrakePressed();
-            bool lim = (digitalRead(PIN_LIMIT_SWITCH) == HIGH);
+            bool lim = (digitalRead(PIN_LIMIT_SWITCH) == LOW);  // active LOW
             bool mc  = (digitalRead(BRAKE_MC_PIN) == LOW);
             char buf[22];
             display.setCursor(0, 10);

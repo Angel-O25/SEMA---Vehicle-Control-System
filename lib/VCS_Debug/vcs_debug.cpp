@@ -32,16 +32,17 @@ static uint8_t s_len = 0;
 static void onScreenChange(DebugScreen old_screen, DebugScreen new_screen) {
     // Leaving steer_ctrl → restore normal stepper speed
     if (old_screen == DBG_STEER_CTRL && new_screen != DBG_STEER_CTRL) {
-        ledcSetup(0, STEPPER_MAX_HZ, 8);
-        ledcAttachPin(PIN_STEER_PUL, 0);
+        // Do NOT call ledcSetup/ledcAttachPin/ledcWrite here.
+        // LEDC must only be used from Core 0 (CommLoop). Core 1 (DebugTask)
+        // calling LEDC functions corrupts the channel state for Core 0.
         Serial.printf("[STEER] Speed restored to %d Hz\r\n", (int)STEPPER_MAX_HZ);
     }
 
     // Entering steer_ctrl → center target + slow speed
     if (new_screen == DBG_STEER_CTRL) {
         dbg_steer_target_mv = (uint32_t)STEER_POT_CENTER_MV;
-        ledcSetup(0, 300, 8);         // 300 Hz — safe for manual test
-        ledcAttachPin(PIN_STEER_PUL, 0);
+        // Do NOT call LEDC functions from Core 1 (DebugTask).
+        // CommLoop (Core 0) manages LEDC. Speed change takes effect on next PID tick.
         Serial.println(F("[STEER] Debug steer_ctrl entered"));
         Serial.println(F("        Speed: 300 Hz (slow). Centering first."));
         Serial.printf( "        Valid range: %d – %d mV   center: %d mV\r\n",
@@ -248,16 +249,21 @@ static void parseCommand(const char *cmd) {
         Serial.printf("[STEER_TEST] Watch motor. If NO movement -> hardware/wiring issue.\r\n");
         Serial.printf("[STEER_TEST] If movement -> PID or mapping bug.\r\n");
 
-        digitalWrite(PIN_STEER_ENA, HIGH);
-        delayMicroseconds(20);                         // ENA setup time
+        // Use direct GPIO — LEDC must not be called from Core 1 (DebugTask)
+        digitalWrite(PIN_STEER_ENA, HIGH);   // wait no — 2N2222: LOW=enabled
+        delayMicroseconds(20);
+        digitalWrite(PIN_STEER_ENA, LOW);    // 2N2222: LOW=transistor OFF=enabled
         digitalWrite(PIN_STEER_DIR, ccw ? LOW : HIGH);
         delayMicroseconds(5);
-        ledcWrite(0, 128);                             // start pulses
 
-        vTaskDelay((secs * 1000) / portTICK_PERIOD_MS);
-
-        ledcWrite(0, 0);
-        digitalWrite(PIN_STEER_ENA, LOW);
+        uint32_t end_ms = millis() + (uint32_t)(secs * 1000);
+        while (millis() < end_ms) {
+            digitalWrite(PIN_STEER_PUL, HIGH);
+            ets_delay_us(500);   // 500µs HIGH
+            digitalWrite(PIN_STEER_PUL, LOW);
+            ets_delay_us(500);   // 500µs LOW → 1kHz
+        }
+        digitalWrite(PIN_STEER_ENA, HIGH);   // disable after test
         uint32_t raw = getSteeringRawMv();
         Serial.printf("[STEER_TEST] Done. Final pot reading: %lu mV\r\n",
                       (unsigned long)raw);
@@ -329,7 +335,12 @@ void DebugTask(void *pvParameters) {
 
         // ── Brake debug ───────────────────────────────────────
         if (g_debug_mode && g_debug_screen == DBG_BRAKE) {
-            forceBrakeEngagement(isPhysicalBrakePressed());
+            // Do NOT call forceBrakeEngagement() here every tick.
+            // forceBrakeEngagement() resets s_want_engage every 50ms
+            // which restarts the retract timer and prevents BRAKE_RETRACT_MS
+            // from ever elapsing. The brake pedal is already handled inside
+            // updateLowBrake() which runs every 10ms on Core 0.
+            // This block intentionally left empty — brake screen is display only.
         }
 
         vTaskDelay(50 / portTICK_PERIOD_MS);
